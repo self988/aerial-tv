@@ -231,7 +231,6 @@ fun ControlCenter(
             }
         }
     }
-}
 
 /**
  * Control Center in Kids and Elders mode (Restricted): the time, volume and brightness, the day's
