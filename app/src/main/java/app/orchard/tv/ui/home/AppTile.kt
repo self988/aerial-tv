@@ -160,6 +160,7 @@ fun AppTile(
     showName: Boolean = true,
     /** The name sits on the glass plate, which ends just under it: it does not step down past the focus frame. */
     nameOnPlate: Boolean = false,
+    upRequester: (() -> FocusRequester?)? = null,
 ) {
     val reduced = LocalReducedMotion.current
     val scope = rememberCoroutineScope()
@@ -397,7 +398,7 @@ fun AppTile(
                         },
                     )
                 }
-                .focusProperties { if (rowEnd) right = FocusRequester.Cancel }
+                .focusProperties { if (rowEnd) right = FocusRequester.Cancel; upRequester?.invoke()?.let { up = it } }
                 .focusable(enabled),
         ) {
             Spacer(Modifier.fillMaxSize().drawWithCache {

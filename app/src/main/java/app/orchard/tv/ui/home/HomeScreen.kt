@@ -830,6 +830,11 @@ fun HomeScreen(
                             label = "slot",
                         )
                         val saverFade = { ((toSaver.value - 0.05f * (index % columns)) / 0.6f).coerceIn(0f, 1f) }
+                        val upTarget: FocusRequester? = if (index >= columns) null else when (index) {
+                            columns - 1 -> pillRequester
+                            columns - 2 -> vpnRequester
+                            else -> null
+                        }
                         AppTile(
                             app = app,
                             width = metrics.tileW,
@@ -838,6 +843,7 @@ fun HomeScreen(
                             enabled = gridEnabled,
                             moving = moving == app.key,
                             opacity = { 1f - saverFade() },
+                            upRequester = { upTarget },
                             onFocused = {
                                 focusedKey = app.key
                                 lastFocusedIndex = index
