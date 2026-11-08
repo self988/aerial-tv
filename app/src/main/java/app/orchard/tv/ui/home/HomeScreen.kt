@@ -1,5 +1,6 @@
 package app.orchard.tv.ui.home
 
+import android.content.ComponentName
 import android.content.Intent
 import android.content.res.Configuration
 import android.os.Build
@@ -299,6 +300,7 @@ fun HomeScreen(
     val requesters = remember { HashMap<String, FocusRequester>() }
     fun requester(key: String) = requesters.getOrPut(key) { FocusRequester() }
     val pillRequester = remember { FocusRequester() }
+    val vpnRequester = remember { FocusRequester() }
     val appContext = LocalContext.current
     val firmwareInputPanel = remember {
         SystemProbe.tclInputPanel(appContext) != null || SystemProbe.coocaaInputPanel(appContext)
@@ -936,6 +938,55 @@ fun HomeScreen(
                     },
                 )
             }
+            VpnPill(
+                vpnActive = vm.network.vpn,
+                enabled = gridEnabled && moving == null,
+                focusRequester = vpnRequester,
+                modifier = Modifier
+                    .diagLayer("vpn-pill")
+                    .padding(end = 10.dp)
+                    .focusProperties {
+                        right = pillRequester
+                        val key = focusedKey
+                        if (key != null && apps.indexOfFirst { it.key == key } in 0 until columns) down = requester(key)
+                    }
+                    .graphicsLayer {
+                        alpha = 1f - (toSaver.value * 2f).coerceIn(0f, 1f)
+                        compositingStrategy = CompositingStrategy.ModulateAlpha
+                    },
+                onFocused = { gained ->
+                    if (gained) {
+                        if (focusedKey == null) {
+                            if (apps.isNotEmpty()) focusApp(0)
+                        } else {
+                            pillFocused = true
+                        }
+                    }
+                },
+                onClick = {
+                    val happPackage = "su.happ.proxyutility"
+                    val isInstalled = try {
+                        appContext.packageManager.getPackageInfo(happPackage, 0) != null
+                    } catch (_: Exception) {
+                        false
+                    }
+                    if (isInstalled) {
+                        val intent = Intent("su.happ.proxyutility.action.widget.click").apply {
+                            component = ComponentName(happPackage, "su.happ.proxyutility.receiver.WidgetProvider")
+                            flags = Intent.FLAG_INCLUDE_STOPPED_PACKAGES
+                        }
+                        appContext.sendBroadcast(intent)
+                    } else {
+                        try {
+                            appContext.startActivity(Intent(android.provider.Settings.ACTION_VPN_SETTINGS))
+                        } catch (_: Exception) {
+                            try {
+                                appContext.startActivity(Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS))
+                            } catch (_: Exception) {}
+                        }
+                    }
+                },
+            )
             StatusPill(
                 now = now,
                 network = vm.network,
@@ -947,6 +998,7 @@ fun HomeScreen(
                     // Down goes back to the top-row tile Up came from, not to the nearest one,
                     // which under the pill is the last of the row (issue #703).
                     .focusProperties {
+                        left = vpnRequester
                         val key = focusedKey
                         if (key != null && apps.indexOfFirst { it.key == key } in 0 until columns) down = requester(key)
                     }

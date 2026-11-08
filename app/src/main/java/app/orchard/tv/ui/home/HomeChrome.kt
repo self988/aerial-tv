@@ -20,6 +20,8 @@ import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -969,6 +971,87 @@ fun VpnBadge(color: Color, modifier: Modifier = Modifier, fontSize: TextUnit = 1
             .smoothBorder(1.2.dp, color, 4.dp)
             .padding(horizontal = 4.dp, vertical = 1.dp),
     )
+}
+
+/**
+ * Top right VPN button placed immediately to the left of [StatusPill].
+ * When OFF: Light frosted glass pill with dark shield icon and "VPN" label.
+ * When ON: Dark graphite pill with neon green glowing dot, white shield icon, and "VPN" label.
+ */
+@Composable
+fun VpnPill(
+    vpnActive: Boolean,
+    enabled: Boolean,
+    focusRequester: FocusRequester,
+    onFocused: (Boolean) -> Unit,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Pressable(
+        onClick = onClick,
+        enabled = enabled,
+        focusRequester = focusRequester,
+        focusedScale = 1.08f,
+        modifier = modifier,
+    ) { state ->
+        LaunchedEffect(state.focused) { onFocused(state.focused) }
+
+        val targetBg = when {
+            state.focused -> if (vpnActive) Color(0xFF26262B) else Color.White
+            vpnActive -> Color(0xFF141418).copy(alpha = 0.90f)
+            else -> Color.White.copy(alpha = 0.85f)
+        }
+        val bg by animateColorAsState(targetBg, tween(180, easing = Motion.EaseOut), label = "vpn-pill-bg")
+
+        val targetFg = when {
+            state.focused -> if (vpnActive) Color.White else Palette.OnFocus
+            vpnActive -> Color.White
+            else -> Color(0xFF1A1A1E)
+        }
+        val fg by animateColorAsState(targetFg, tween(180, easing = Motion.EaseOut), label = "vpn-pill-fg")
+
+        val (borderWidth, borderColor) = when {
+            state.focused -> if (vpnActive) 1.5.dp to Color.White.copy(alpha = 0.85f) else 1.5.dp to Color.White
+            vpnActive -> 1.dp to Color.White.copy(alpha = 0.22f)
+            else -> 0.dp to Color.Transparent
+        }
+
+        Row(
+            Modifier
+                .clip(RoundedCornerShape(50))
+                .drawBehind { drawRect(bg) }
+                .then(
+                    if (borderWidth > 0.dp && borderColor != Color.Transparent) {
+                        Modifier.border(borderWidth, borderColor, RoundedCornerShape(50))
+                    } else Modifier
+                )
+                .height(34.dp)
+                .padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (vpnActive) {
+                Box(
+                    Modifier
+                        .size(8.dp)
+                        .drawBehind {
+                            drawCircle(Color(0xFF34C759).copy(alpha = 0.35f), radius = 5.5.dp.toPx())
+                            drawCircle(Color(0xFF34C759), radius = 3.5.dp.toPx())
+                        }
+                )
+            }
+            GlyphIcon(Glyph.Shield, fg, 15.dp)
+            BasicText(
+                stringResource(R.string.net_vpn),
+                style = Type.Headline.copy(
+                    color = fg,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 0.02.em,
+                ),
+            )
+        }
+    }
 }
 
 /**
