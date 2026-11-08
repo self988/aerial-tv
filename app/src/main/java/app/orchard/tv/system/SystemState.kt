@@ -73,6 +73,10 @@ object SystemProbe {
         @Suppress("DEPRECATION")
         val vpn = caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) || runCatching {
             cm.allNetworks.any { cm.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true && cm.getNetworkInfo(it)?.isConnected == true }
+        }.getOrDefault(false) || runCatching {
+            java.net.NetworkInterface.getNetworkInterfaces()?.asSequence()?.any { iface ->
+                (iface.name.startsWith("tun") || iface.name.startsWith("ppp")) && iface.isUp
+            } == true
         }.getOrDefault(false)
         // Under a VPN the default network is the VPN's, which carries no Wi-Fi or Ethernet
         // transport on Android 8, and was shown as Ethernet over Wi-Fi (Hisense H55E9A, issue #435).

@@ -134,6 +134,12 @@ class MainActivity : ComponentActivity() {
         override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) = runOnUiThread { vm.refreshNetwork() }
     }
 
+    private val vpnNetworkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = runOnUiThread { vm.refreshNetwork() }
+        override fun onLost(network: Network) = runOnUiThread { vm.refreshNetwork() }
+        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) = runOnUiThread { vm.refreshNetwork() }
+    }
+
     // See MissingClipboard.
     override fun getSystemService(name: String): Any? =
         super.getSystemService(name) ?: if (name == CLIPBOARD_SERVICE) MissingClipboard.standIn else null
@@ -962,6 +968,12 @@ class MainActivity : ComponentActivity() {
             if (Build.VERSION.SDK_INT >= 24) cm.registerDefaultNetworkCallback(networkCallback)
             // A request leaves VPNs out unless told otherwise; the status pill shows one coming up (issue #809).
             else cm.registerNetworkCallback(NetworkRequest.Builder().removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN).build(), networkCallback)
+            runCatching {
+                cm.registerNetworkCallback(
+                    NetworkRequest.Builder().removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN).build(),
+                    vpnNetworkCallback
+                )
+            }
         }
         // Apps can change while Aerial is in the background without it hearing about it: the
         // package receiver above is unregistered in onStop, so nothing arrives then.
@@ -1067,6 +1079,7 @@ class MainActivity : ComponentActivity() {
         unregisterReceiver(volumeReceiver)
         unregisterReceiver(dayReceiver)
         runCatching { getSystemService<ConnectivityManager>()?.unregisterNetworkCallback(networkCallback) }
+        runCatching { getSystemService<ConnectivityManager>()?.unregisterNetworkCallback(vpnNetworkCallback) }
     }
 
     /** Opens an app, growing it out of its tile. */

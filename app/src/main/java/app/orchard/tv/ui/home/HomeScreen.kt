@@ -972,7 +972,8 @@ fun HomeScreen(
                 onClick = {
                     val intent = Intent("su.happ.proxyutility.action.widget.click").apply {
                         component = ComponentName("su.happ.proxyutility", "su.happ.proxyutility.receiver.WidgetProvider")
-                        flags = Intent.FLAG_INCLUDE_STOPPED_PACKAGES
+                        addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
+                        addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
                     }
                     try {
                         appContext.sendBroadcast(intent)
@@ -982,6 +983,12 @@ fun HomeScreen(
                                 appContext.startActivity(it)
                             }
                         } catch (_: Exception) {}
+                    }
+                    scope.launch {
+                        repeat(10) {
+                            delay(350)
+                            vm.refreshNetwork()
+                        }
                     }
                 },
             )
