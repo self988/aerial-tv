@@ -225,7 +225,6 @@ object Weather {
                     putLong("located_at", System.currentTimeMillis())
                 }
             }
-            }
         }
         val json = JSONObject(get("https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,weather_code,is_day&hourly=temperature_2m,weather_code,is_day&daily=weather_code,temperature_2m_max,temperature_2m_min&forecast_days=7&timezone=auto"))
         val current = json.getJSONObject("current")
