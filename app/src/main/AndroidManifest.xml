@@ -55,6 +55,7 @@
     <!-- Android 11 package visibility for the Skyworth/Coocaa source API: the TV's SDK provider
          lists the ports and its TV activity opens one (SystemProbe.skyworthSources). -->
     <queries>
+        <package android:name="su.happ.proxyutility" />
         <package android:name="com.skyworth.tv" />
         <provider android:authorities="com.skyworth.tv.sdk.provider" />
         <!-- SystemProbe.coocaaInputPanel: coocaaInputPanel asks whether Coocaa's Quick Panel

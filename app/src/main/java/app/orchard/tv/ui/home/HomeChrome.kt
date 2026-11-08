@@ -1011,7 +1011,7 @@ fun VpnPill(
         val fg by animateColorAsState(targetFg, tween(180, easing = Motion.EaseOut), label = "vpn-pill-fg")
 
         val (borderWidth, borderColor) = when {
-            state.focused -> if (vpnActive) 1.5.dp to Color.White.copy(alpha = 0.85f) else 1.5.dp to Color.White
+            state.focused -> if (vpnActive) 1.5.dp to Color.White.copy(alpha = 0.90f) else 1.5.dp to Color(0xFF1A1A1E)
             vpnActive -> 1.dp to Color.White.copy(alpha = 0.22f)
             else -> 0.dp to Color.Transparent
         }

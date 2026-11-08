@@ -964,26 +964,18 @@ fun HomeScreen(
                     }
                 },
                 onClick = {
-                    val happPackage = "su.happ.proxyutility"
-                    val isInstalled = try {
-                        appContext.packageManager.getPackageInfo(happPackage, 0) != null
-                    } catch (_: Exception) {
-                        false
+                    val intent = Intent("su.happ.proxyutility.action.widget.click").apply {
+                        component = ComponentName("su.happ.proxyutility", "su.happ.proxyutility.receiver.WidgetProvider")
+                        flags = Intent.FLAG_INCLUDE_STOPPED_PACKAGES
                     }
-                    if (isInstalled) {
-                        val intent = Intent("su.happ.proxyutility.action.widget.click").apply {
-                            component = ComponentName(happPackage, "su.happ.proxyutility.receiver.WidgetProvider")
-                            flags = Intent.FLAG_INCLUDE_STOPPED_PACKAGES
-                        }
+                    try {
                         appContext.sendBroadcast(intent)
-                    } else {
+                    } catch (_: Exception) {
                         try {
-                            appContext.startActivity(Intent(android.provider.Settings.ACTION_VPN_SETTINGS))
-                        } catch (_: Exception) {
-                            try {
-                                appContext.startActivity(Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS))
-                            } catch (_: Exception) {}
-                        }
+                            appContext.packageManager.getLaunchIntentForPackage("su.happ.proxyutility")?.let {
+                                appContext.startActivity(it)
+                            }
+                        } catch (_: Exception) {}
                     }
                 },
             )
