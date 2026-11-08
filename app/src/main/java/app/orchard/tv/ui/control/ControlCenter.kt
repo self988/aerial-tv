@@ -10,6 +10,15 @@ import java.util.Locale
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.platform.LocalDensity
+import kotlinx.coroutines.launch
 import android.view.KeyEvent as NativeKeyEvent
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
@@ -90,6 +99,10 @@ import app.orchard.tv.Overlay
 import app.orchard.tv.R
 import app.orchard.tv.apps.SourceLooks
 import app.orchard.tv.settings.AerialSettings
+import app.orchard.tv.settings.Restricted
+import app.orchard.tv.settings.RestrictedKind
+import app.orchard.tv.ui.home.kidsTimeLine
+import app.orchard.tv.system.HisenseLaserPanel
 import app.orchard.tv.system.HomeStatus
 import app.orchard.tv.system.LaunchFallback
 import app.orchard.tv.system.NetKind
@@ -109,6 +122,7 @@ import app.orchard.tv.ui.theme.GlyphIcon
 import app.orchard.tv.ui.theme.Motion
 import app.orchard.tv.ui.theme.Palette
 import app.orchard.tv.ui.theme.Type
+import app.orchard.tv.update.ReleaseNotes
 import app.orchard.tv.update.SelfCompile
 import app.orchard.tv.update.Updates
 import app.orchard.tv.wallpaper.PhoneServer
@@ -131,6 +145,8 @@ fun ControlCenter(
     onClose: () -> Unit,
     /** Draw the closed panel once, nearly transparent, so that its first opening is not its first draw (HomeScreen). */
     warm: Boolean = false,
+    /** Home is on its top row: no tiles under the panel, only the wallpaper (see liquidGlass). */
+    onShelf: Boolean = false,
 ) {
     BackHandler(enabled = visible) {
         when (page) {
@@ -165,7 +181,7 @@ fun ControlCenter(
         // at 1% while Home is idle, without focus, the first opening is like the second.
         if (warm && !visible) {
             Column(Modifier.graphicsLayer { alpha = 0.01f }.width(300.dp).liquidGlass(24.dp).padding(16.dp)) {
-                MainPage(vm, now, false, onOpen)
+                MainPage(vm, now, takeFocus = false, poll = false, onOpen = onOpen)
             }
         }
         AnimatedVisibility(
@@ -178,8 +194,7 @@ fun ControlCenter(
                 Modifier
                     .width(if (page == CcPage.Weather) 340.dp else 300.dp)
                     .consumeTaps()
-                    .liquidGlass(24.dp)
-                    .padding(16.dp),
+                    .liquidGlass(24.dp, seeThroughFilm = onShelf),
             ) {
                 AnimatedContent(
                     targetState = page,
@@ -193,16 +208,24 @@ fun ControlCenter(
                     },
                     label = "cc-page",
                 ) { p ->
-                    // Closing sets the page back to Main while the panel fades out; that page must
-                    // not take focus from the tile Home has just put it back on.
-                    when (p) {
-                        CcPage.Main -> MainPage(vm, now, visible, onOpen)
-                        CcPage.Inputs -> InputsPage(vm, visible, onOpen)
-                        CcPage.InputSettings -> InputSettingsPage(vm, visible)
-                        CcPage.Update -> UpdatePage(vm, visible)
-                        CcPage.Setup -> SetupPage(vm, visible, onOpen)
-                        CcPage.SleepTimer -> SleepTimerPage(vm, visible)
-                        CcPage.Weather -> WeatherPage(vm, visible)
+                    // Keep room for focused rows inside the fade layer so their scaled edges are not clipped.
+                    Box(Modifier.padding(16.dp)) {
+                        // Closing sets the page back to Main while the panel fades out; that page must
+                        // not take focus from the tile Home has just put it back on.
+                        when (p) {
+                            CcPage.Main -> if (Restricted.active) {
+                                KidsPage(vm, now, visible)
+                            } else {
+                                MainPage(vm, now, takeFocus = visible, poll = visible, onOpen = onOpen)
+                            }
+                            CcPage.Inputs -> InputsPage(vm, visible, onOpen)
+                            CcPage.InputSettings -> InputSettingsPage(vm, visible)
+                            CcPage.Update -> UpdatePage(vm, visible)
+                            CcPage.Setup -> SetupPage(vm, visible, onOpen)
+                            CcPage.SleepTimer -> SleepTimerPage(vm, visible)
+                            CcPage.Weather -> WeatherPage(vm, visible)
+                        }
+                    }
                     }
                 }
             }
@@ -210,9 +233,56 @@ fun ControlCenter(
     }
 }
 
+/**
+ * Control Center in Kids and Elders mode (Restricted): the time, volume and brightness, the day's
+ * time left, and leaving the mode with the PIN. No inputs, network, settings or Personalize.
+ */
 @Composable
-private fun MainPage(vm: HomeViewModel, now: LocalDateTime, takeFocus: Boolean, onOpen: (android.content.Intent) -> Unit) {
+private fun KidsPage(vm: HomeViewModel, now: LocalDateTime, takeFocus: Boolean) {
+    val first = remember { FocusRequester() }
     val context = LocalContext.current
+    val laser = remember { HisenseLaserPanel.usable(context) }
+    PollBrightness(vm, laser, enabled = takeFocus)
+    LaunchedEffect(Unit) {
+        if (!takeFocus) return@LaunchedEffect
+        withFrameNanos { }
+        runCatching { first.requestFocus() }
+    }
+    Column {
+        BasicText(timeText(now), style = Type.SmallClock.copy(fontSize = Type.LargeTitle.fontSize * 1.05f))
+        BasicText(dateText(now), style = Type.Callout)
+        kidsTimeLine()?.let {
+            Spacer(Modifier.height(6.dp))
+            BasicText(it, style = Type.Callout.copy(color = Palette.SecondaryLabel))
+        }
+        Spacer(Modifier.height(12.dp))
+        VolumeRow(vm, first)
+        Spacer(Modifier.height(6.dp))
+        BrightnessRow(vm, laser)
+        Spacer(Modifier.height(6.dp))
+        MenuRow(
+            Glyph.Shield,
+            stringResource(if (Restricted.kind == RestrictedKind.Kids) R.string.cc_kids_leave else R.string.cc_elders_leave),
+            focusRequester = first,
+            onClick = vm::leaveKidsMode,
+        )
+    }
+}
+
+@Composable
+private fun MainPage(
+    vm: HomeViewModel,
+    now: LocalDateTime,
+    takeFocus: Boolean,
+    /** The row polls the picture service, so only the copy that is on screen may do it. */
+    poll: Boolean,
+    onOpen: (android.content.Intent) -> Unit,
+) {
+    val context = LocalContext.current
+    // The laser level belongs to the laser sets only (HisenseLaserPanel); every other TV keeps
+    // the brightness row it had.
+    val laser = remember { HisenseLaserPanel.usable(context) }
+    PollBrightness(vm, laser, poll)
     val first = remember { FocusRequester() }
     val networkFocus = remember { FocusRequester() }
     val settingsFocus = remember { FocusRequester() }
@@ -297,9 +367,17 @@ private fun MainPage(vm: HomeViewModel, now: LocalDateTime, takeFocus: Boolean, 
         Spacer(Modifier.height(12.dp))
         VolumeRow(vm, cameFrom)
         Spacer(Modifier.height(6.dp))
-        BrightnessRow(vm)
+        BrightnessRow(vm, laser)
 
         Spacer(Modifier.height(6.dp))
+        // A parent left Kids and Elders mode: one press back into it, no PIN.
+        if (Restricted.enabled && Restricted.suspended) {
+            MenuRow(
+                Glyph.Kids,
+                stringResource(if (Restricted.kind == RestrictedKind.Kids) R.string.cc_kids_back else R.string.cc_elders_back),
+                onClick = { Restricted.start(); vm.overlay = Overlay.None },
+            )
+        }
         // How Home looks (wallpaper, screensaver, focus style, hidden apps, weather) lives in one place.
         MenuRow(
             Glyph.Photo,
@@ -386,6 +464,7 @@ private fun UpdatePage(vm: HomeViewModel, takeFocus: Boolean) {
                 Glyph.Download,
                 when (state) {
                     is Updates.Install.Downloading -> stringResource(R.string.cc_update_downloading, (state.fraction * 100).toInt())
+                    Updates.Install.Waiting -> stringResource(R.string.cc_update_waiting)
                     else -> stringResource(R.string.cc_update_install)
                 },
                 focusRequester = first,
@@ -395,6 +474,7 @@ private fun UpdatePage(vm: HomeViewModel, takeFocus: Boolean) {
         Column(Modifier.padding(horizontal = 14.dp)) {
             Spacer(Modifier.height(10.dp))
             val status = when (val state = Updates.install) {
+                Updates.Install.Waiting -> stringResource(R.string.cc_update_waiting)
                 Updates.Install.Opened -> stringResource(R.string.cc_update_opened)
                 Updates.Install.NeedsPermission -> stringResource(R.string.cc_update_permission)
                 Updates.Install.NeedsStoragePermission -> stringResource(R.string.cc_update_storage_permission)
@@ -409,6 +489,14 @@ private fun UpdatePage(vm: HomeViewModel, takeFocus: Boolean) {
                 else -> stringResource(R.string.cc_update_current, Updates.current)
             }
             BasicText(status, style = Type.Caption)
+        }
+        // Read when the page opens too: the check that found the version may have missed them.
+        LaunchedEffect(Unit) { if (Updates.notes.isEmpty()) Updates.loadNotes() }
+        Updates.notes.takeIf { it.isNotEmpty() }?.let { notes ->
+            Spacer(Modifier.height(10.dp))
+            UpdateNotes(notes)
+        }
+        Column(Modifier.padding(horizontal = 14.dp)) {
             Spacer(Modifier.height(16.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(104.dp).smoothBackground(Color.White, 12.dp).padding(8.dp)) {
@@ -419,6 +507,73 @@ private fun UpdatePage(vm: HomeViewModel, takeFocus: Boolean) {
                     BasicText(stringResource(if (canInstall) R.string.cc_update_scan_else else R.string.cc_update_scan), style = Type.Body)
                     Spacer(Modifier.height(6.dp))
                     BasicText(stringResource(R.string.cc_update_keeps), style = Type.Caption)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * What the update brings, release by release. The lines are not controls: focused (Down from the
+ * install button), Up and Down scroll it a few lines at a time, and past either end focus moves on
+ * as from any row. The panel has room for about ten lines under the install button and above the
+ * QR code; a bar on the right shows how much more there is.
+ */
+@Composable
+private fun UpdateNotes(notes: List<ReleaseNotes>) {
+    val scroll = rememberScrollState()
+    val scope = rememberCoroutineScope()
+    var focused by remember { mutableStateOf(false) }
+    val step = with(LocalDensity.current) { 64.dp.toPx() }
+    val glow by animateFloatAsState(if (focused) 1f else 0f, tween(140, easing = Motion.EaseOut), label = "notes-focus")
+    val scrollable = scroll.maxValue > 0
+    Box(Modifier.fillMaxWidth()) {
+        Box(Modifier.matchParentSize().graphicsLayer { alpha = glow }.smoothBackground(Palette.Fill, 12.dp))
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(max = 164.dp)
+                .onFocusChanged { focused = it.isFocused }
+                .onKeyEvent { e ->
+                    val down = when (e.nativeKeyEvent.keyCode) {
+                        NativeKeyEvent.KEYCODE_DPAD_DOWN -> true
+                        NativeKeyEvent.KEYCODE_DPAD_UP -> false
+                        else -> return@onKeyEvent false
+                    }
+                    if (if (down) scroll.value >= scroll.maxValue else scroll.value <= 0) return@onKeyEvent false
+                    if (e.type == KeyEventType.KeyDown) {
+                        Sounds.step()
+                        scope.launch { scroll.animateScrollBy(if (down) step else -step, spring(dampingRatio = 1f, stiffness = 500f)) }
+                    }
+                    true
+                }
+                .focusProperties { canFocus = scrollable }
+                .focusable()
+                .drawWithContent {
+                    drawContent()
+                    if (scroll.maxValue <= 0) return@drawWithContent
+                    // The scroll bar, inside the right padding.
+                    val track = size.height - 16.dp.toPx()
+                    val thumb = (track * size.height / (size.height + scroll.maxValue)).coerceAtLeast(12.dp.toPx())
+                    val top = 8.dp.toPx() + (track - thumb) * scroll.value / scroll.maxValue
+                    drawRoundRect(
+                        if (focused) Palette.SecondaryLabel else Palette.TertiaryLabel,
+                        topLeft = Offset(size.width - 6.dp.toPx(), top),
+                        size = Size(2.5.dp.toPx(), thumb),
+                        cornerRadius = CornerRadius(1.25.dp.toPx()),
+                    )
+                }
+                .verticalScroll(scroll)
+                .padding(start = 14.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
+        ) {
+            notes.forEachIndexed { i, release ->
+                if (i > 0) Spacer(Modifier.height(10.dp))
+                BasicText(stringResource(R.string.cc_update_notes, release.version), style = Type.Callout.copy(color = Palette.Label))
+                release.changes.forEach { line ->
+                    Row(Modifier.padding(top = 4.dp)) {
+                        BasicText("•", style = Type.Caption, modifier = Modifier.width(10.dp))
+                        BasicText(line, style = Type.Caption, modifier = Modifier.weight(1f))
+                    }
                 }
             }
         }
@@ -481,7 +636,7 @@ private fun RoundButton(
     Pressable(onClick = onClick, modifier = modifier, focusRequester = focusRequester, focusedScale = 1.1f) { state ->
         val bg by animateColorAsState(if (state.focused) Palette.Focus else Palette.Fill, tween(140, easing = Motion.EaseOut), label = "round-bg")
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp)) {
-            Box(Modifier.size(48.dp).clip(CircleShape).background(bg), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(48.dp).clip(CircleShape).drawBehind { drawRect(bg) }, contentAlignment = Alignment.Center) {
                 GlyphIcon(glyph, if (state.focused) Palette.OnFocus else Palette.Label, 20.dp)
             }
             Spacer(Modifier.height(6.dp))
@@ -546,7 +701,7 @@ private fun SliderRow(
                         while (travelled <= -pitch) { step(-1); travelled += pitch }
                     }
                 }
-                .smoothBackground(bg, 14.dp).height(40.dp).padding(horizontal = 14.dp),
+                .smoothBackground({ bg }, 14.dp).height(40.dp).padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -579,22 +734,42 @@ private fun VolumeRow(vm: HomeViewModel, returnTo: FocusRequester) {
     )
 }
 
-/**
- * Brightness where Aerial may change it; otherwise a row that opens the TV's picture settings, and
- * says so: a bare "Brightness" with no slider read as broken (Vidda 85V1F-S, FFalcon, issue #130).
+/** Reads the level every 700 ms while the brightness row is on screen. Neither the DLP light
+ * engine nor the picture service announces a change, and the TV's own slider can be moved with the
+ * panel still up, so nothing else would refresh either.
+ *
+ * Only the on-screen copy polls: the closed panel draws this page once at 1 %, so that its first
+ * opening is not its first draw (ControlCenter's warm path), and a LaunchedEffect runs from there
+ * too — that copy would read the picture service for a panel nobody can see.
  */
 @Composable
-private fun BrightnessRow(vm: HomeViewModel) {
+private fun PollBrightness(vm: HomeViewModel, laser: Boolean, enabled: Boolean) {
     val context = LocalContext.current
     val xgimi = remember { SystemProbe.xgimiBrightnessLevel() != null }
-    LaunchedEffect(xgimi) {
-        if (!xgimi) return@LaunchedEffect
-        vm.refreshBrightness()
+    LaunchedEffect(xgimi, laser, enabled) {
+        if (!enabled || (!xgimi && !laser)) return@LaunchedEffect
+        // XGIMI's Boost is discovered once, before the first poll; it has no saying on a laser set.
+        if (xgimi) vm.discoverBrightnessBoost()
         while (isActive) {
             delay(700)
             vm.refreshBrightness()
         }
     }
+}
+
+/**
+ * Brightness where Aerial may change it; otherwise a row that opens the TV's picture settings, and
+ * says so: a bare "Brightness" with no slider read as broken (Vidda 85V1F-S, FFalcon, issue #130).
+ */
+@Composable
+private fun BrightnessRow(vm: HomeViewModel, laser: Boolean) {
+    val context = LocalContext.current
+    // XGIMI (GMUI): the real brightness is the DLP light-engine level. It reads through the HAL
+    // class (SystemProbe.xgimiBrightnessLevel) and, on this firmware, writes through it too, so the
+    // row is a slider of the light engine's own levels (1..10) rather than a percentage of the
+    // system setting that moves nothing. [laser] comes from the page: it is the light source's own
+    // 0..10 level, which the system setting does not move either.
+    val xgimi = remember { SystemProbe.xgimiBrightnessLevel() != null }
     val level = vm.brightness
     if (level == null) {
         MenuRow(Glyph.Sun, stringResource(R.string.cc_brightness), onClick = {
@@ -605,9 +780,21 @@ private fun BrightnessRow(vm: HomeViewModel) {
         SliderRow(
             glyph = Glyph.Sun,
             level = level,
-            value = Math.round(level * 100).toString(),
-            // Brightness.adjust moves 5% a step, and stops at 1%; XGIMI steps its own levels.
-            steps = if (xgimi) SystemProbe.xgimiBrightnessMax else 20,
+            // A laser set's level is 11 notches of its own, not a percentage of anything: show the
+            // notch, the number the TV's own slider shows (4, not 40).
+            value = when {
+                vm.brightnessBoost == true -> "10+"
+                laser -> Math.round(level * HisenseLaserPanel.LEVEL_MAX).toString()
+                else -> Math.round(level * 100).toString()
+            },
+            // Brightness.adjust moves 5% a step, and stops at 1%; XGIMI steps its own levels and a
+            // Hisense laser set its own 11 notches. Only the drag pitch follows this; a key is one
+            // step either way.
+            steps = when {
+                laser -> HisenseLaserPanel.LEVEL_MAX
+                xgimi -> SystemProbe.xgimiBrightnessMax
+                else -> 20
+            },
             onStep = vm::adjustBrightness,
             onClick = {},
         )
@@ -727,7 +914,7 @@ private fun ChoiceRow(text: String, selected: Boolean, focusRequester: FocusRequ
         val bg by animateColorAsState(if (state.focused) Palette.Focus else Color.Transparent, tween(140, easing = Motion.EaseOut), label = "choice-bg")
         val fg = if (state.focused) Palette.OnFocus else Palette.Label
         Row(
-            Modifier.fillMaxWidth().smoothBackground(bg, 12.dp).height(44.dp).padding(horizontal = 14.dp),
+            Modifier.fillMaxWidth().smoothBackground({ bg }, 12.dp).height(44.dp).padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             BasicText(text, style = Type.Body.copy(color = fg), modifier = Modifier.weight(1f))

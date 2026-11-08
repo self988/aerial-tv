@@ -17,6 +17,7 @@ import android.provider.Settings
 import androidx.core.content.ContextCompat
 import androidx.core.content.getSystemService
 import android.util.Log
+import app.orchard.tv.MainActivity
 import app.orchard.tv.dream.AerialDream
 import app.orchard.tv.system.DiagLog
 import app.orchard.tv.system.SystemScreensaver
@@ -39,10 +40,16 @@ object GuardSetup {
 
     private const val PREFS = "system"
 
+    /** JMGO's own accessibility service, which filters keys too; see rebindForJmgoKeys. */
+    private const val JMGO_KEY_SERVICE_PACKAGE = "com.jmgo.systemapi"
+    private const val JMGO_TV_PACKAGE = "com.jmgo.tv"
+    private const val KEY_JMGO_KEY_REBIND_BOOT = "jmgo_key_rebind_boot"
+
     private const val KEY_REVIVALS = "revivals"
 
     private const val REVIVAL_WINDOW_MS = 10 * 60 * 1000L
     private const val KEY_KEEP_ADB = "keep_adb"
+    private const val ENABLED_LISTENERS = "enabled_notification_listeners"
 
     /** When [ensureAdbListening] may still act: only boot shows the lying setting (issue #454). */
     private const val ADB_BOOT_WINDOW_MS = 3 * 60_000L
@@ -173,6 +180,31 @@ object GuardSetup {
         val bootNow = System.currentTimeMillis() - SystemClock.elapsedRealtime()
         if (at !in 0..SystemClock.elapsedRealtime() || kotlin.math.abs(prefs.getLong(KEY_STOCK_HOME_BOOT, 0L) - bootNow) > 2 * 60 * 1000L) return false
         return at >= prefs.getLong(KEY_HOME_IN_FRONT_AT, -1L)
+    }
+
+    /** Whether the guard saw a stock launcher's home come to the front in this boot within the last [ms]. */
+    fun stockHomeSeenWithin(context: Context, ms: Long): Boolean {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val at = prefs.getLong(KEY_STOCK_HOME_AT, -1L)
+        val bootNow = System.currentTimeMillis() - SystemClock.elapsedRealtime()
+        if (at !in 0..SystemClock.elapsedRealtime() || kotlin.math.abs(prefs.getLong(KEY_STOCK_HOME_BOOT, 0L) - bootNow) > 2 * 60 * 1000L) return false
+        return SystemClock.elapsedRealtime() - at < ms
+    }
+
+    /**
+     * The listener's process came back within seconds of the guard seeing the stock launcher: the
+     * firmware force-stopped Aerial on a Home press. Dangbei Max1 (RK3568, Android 11) does so about
+     * a second after every press; the process is back in 0.4 s, but Android often takes 8 s more to
+     * bind the guard, 11 s to Aerial in all (issue #1245, the reporter's measurements). The screen
+     * has nothing else to show, so start Aerial now and let the guard bind behind it. Costs a stock
+     * launcher visit that Aerial's process does not outlast, as #1276's take-over already does.
+     */
+    fun startAfterStopOverStock(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N || HomeGuardService.isRunning) return false
+        if (SystemClock.elapsedRealtime() < 3 * 60_000L) return false
+        if (context.getSystemService<PowerManager>()?.isInteractive != true) return false
+        if (!stockHomeSinceHomeLeft(context) || !stockHomeSeenWithin(context, 5_000L)) return false
+        return runCatching { context.startActivity(MainActivity.bringBackIntent(context)) }.isSuccess
     }
 
     fun wasHomeInFront(context: Context): Boolean =
@@ -421,6 +453,51 @@ object GuardSetup {
     }
 
     /**
+     * Whether the firmware is set to open a signal source by itself at power-on: JMGO's Settings
+     * keeps "Startup Source" in persist.sys.boot.source, 0 being its own Home. The TV then starts
+     * its input player seconds before BOOT_COMPLETED, and Aerial must not come over it.
+     */
+    fun startsOnSignalSource(context: Context): Boolean =
+        runCatching { context.packageManager.getPackageInfo(JMGO_TV_PACKAGE, 0) }.isSuccess &&
+            runCatching {
+                val getInt = Class.forName("android.os.SystemProperties")
+                    .getMethod("getInt", String::class.java, Int::class.javaPrimitiveType)
+                getInt.invoke(null, "persist.sys.boot.source", 0) as Int
+            }.getOrDefault(0) != 0
+
+    /**
+     * JMGO S60 (Amlogic T968, Android 5.1): its SystemApi accessibility service asks for key
+     * filtering at runtime, and up to Android 6 a key goes to one filtering service only, the last
+     * bound first and those not marked default before the default one. Bound at boot, Aerial's
+     * service was the first filtered one, so the system handled Home itself and the stock launcher
+     * flashed before the guard's key broadcast brought Aerial back. Switching accessibility off and
+     * on once made the guard take every Home instead (verified there with a real key event).
+     * Done once per boot, named by the kernel's boot id: this device starts at 1970, so its wall
+     * clock cannot tell one boot from the next. Called from the guard when it sees the input
+     * player, since the firmware opens that without Aerial's activity ever running.
+     */
+    fun rebindForJmgoKeys(context: Context) {
+        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.M) return
+        if (runCatching { context.packageManager.getPackageInfo(JMGO_KEY_SERVICE_PACKAGE, 0) }.isFailure) return
+        val resolved = runCatching {
+            context.packageManager.resolveActivity(
+                Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME),
+                PackageManager.MATCH_DEFAULT_ONLY,
+            )
+        }.getOrNull()
+        if (resolved?.activityInfo?.packageName == context.packageName) return
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_SECURE_SETTINGS) != PackageManager.PERMISSION_GRANTED) return
+        val bootId = runCatching { java.io.File("/proc/sys/kernel/random/boot_id").readText().trim() }
+            .getOrNull()?.takeIf { it.isNotEmpty() } ?: return
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (prefs.getString(KEY_JMGO_KEY_REBIND_BOOT, null) == bootId) return
+        // Marked first: the switch below unbinds the guard, and the next one must not repeat it.
+        prefs.edit().putString(KEY_JMGO_KEY_REBIND_BOOT, bootId).commit()
+        DiagLog.i("jmgo keys: rebinding accessibility so the remote's keys reach the guard")
+        restartAccessibility(context)
+    }
+
+    /**
      * Whether Aerial owns the TV's system screensaver (tools/install.sh sets it when it writes
      * screensaver_components; tools/restore.sh clears it). TCL MT5879 writes its own screensaver
      * back on every boot, so Aerial puts itself back each time it starts.
@@ -506,32 +583,68 @@ object GuardSetup {
     /**
      * A persisted component override survives an APK update. On Skyworth 8N312_H5D the boot
      * receiver was disabled even though the manifest enables it. Android 8's shell cannot
-     * change another app's component, but the owning app can clear its own override. Only do
+     * change another app's component, but the owning app can clear its own override. Vidda's
+     * startup manager also disables ConfigReceiver (V3K_PRO, Android 11), preventing even the
+     * owner's protected ADB configuration broadcasts from being delivered. Only do
      * so after the owner has granted the ADB takeover permission, as for the guard itself.
      */
-    private fun restoreBootReceiver(context: Context) {
+    private fun restoreReceivers(context: Context) {
+        restoreReceiversNow(context)
+        // Vidda's startup manager disables them again about 2 s after a wake, after the screen-on
+        // and onStart that come here had looked; only the notification listener's later rebind
+        // found them, and that not on every wake (Vidda 75E5K, MT9653, Android 11, issue #1181,
+        // the reporter's timeline). Look again once the firmware is done.
+        val app = context.applicationContext
+        receiverRecheck.removeCallbacksAndMessages(null)
+        for (delay in RECEIVER_RECHECK_MS) receiverRecheck.postDelayed({ restoreReceiversNow(app) }, delay)
+    }
+
+    private val receiverRecheck by lazy { Handler(Looper.getMainLooper()) }
+    private val RECEIVER_RECHECK_MS = longArrayOf(5_000L, 15_000L)
+
+    private fun restoreReceiversNow(context: Context) {
         val pm = context.packageManager
-        val component = ComponentName(context, BootReceiver::class.java)
-        runCatching {
-            val state = pm.getComponentEnabledSetting(component)
-            if (state == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT ||
-                state == PackageManager.COMPONENT_ENABLED_STATE_ENABLED) return
-            pm.setComponentEnabledSetting(
-                component, PackageManager.COMPONENT_ENABLED_STATE_DEFAULT, PackageManager.DONT_KILL_APP,
-            )
-            DiagLog.i("revival: cleared disabled BootReceiver override (was $state)")
-        }.onFailure {
-            DiagLog.e("revival: could not restore BootReceiver", it)
+        for (receiver in listOf(BootReceiver::class.java, ConfigReceiver::class.java)) {
+            val component = ComponentName(context, receiver)
+            runCatching {
+                val state = pm.getComponentEnabledSetting(component)
+                if (state == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT ||
+                    state == PackageManager.COMPONENT_ENABLED_STATE_ENABLED) return@runCatching
+                pm.setComponentEnabledSetting(
+                    component, PackageManager.COMPONENT_ENABLED_STATE_DEFAULT, PackageManager.DONT_KILL_APP,
+                )
+                DiagLog.i("revival: cleared disabled ${receiver.simpleName} override (was $state)")
+            }.onFailure {
+                DiagLog.e("revival: could not restore ${receiver.simpleName}", it)
+            }
         }
     }
 
     /** Returns whether Home Guard had been switched off and was put back. */
+    /**
+     * Before `cmd notification` (Android 7) the install writes the listener with `settings put`,
+     * which Haier HRA920L (YunOS 5.1, Android 5.1) refuses to the shell even with the guard on; its
+     * list also starts with a stray literal "null" (issue #1301, the reporter's agent). Aerial holds
+     * WRITE_SECURE_SETTINGS there, so add itself after what is there, which stays as it is.
+     */
+    private fun ensureListenerBeforeNougat(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) return
+        val me = ComponentName(context, RevivalListener::class.java).flattenToString()
+        val current = Settings.Secure.getString(context.contentResolver, ENABLED_LISTENERS).orEmpty()
+        if (current.split(':').any { it == me }) return
+        runCatching {
+            Settings.Secure.putString(context.contentResolver, ENABLED_LISTENERS, if (current.isEmpty()) me else "$current:$me")
+            Log.i(TAG, "notification listener was not allowed; added it")
+        }.onFailure { Log.w(TAG, "could not allow the notification listener", it) }
+    }
+
     fun ensureEnabled(context: Context): Boolean {
         ensureAdb(context)
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_SECURE_SETTINGS) != PackageManager.PERMISSION_GRANTED) return false
-        restoreBootReceiver(context)
+        restoreReceivers(context)
         keepScreensaver(context)
         RevivalSync.ensure(context)
+        ensureListenerBeforeNougat(context)
         if (standingOut(context)) { watchScreenOn(context); return false }
         val me = ComponentName(context, HomeGuardService::class.java).flattenToString()
         val resolver = context.contentResolver
