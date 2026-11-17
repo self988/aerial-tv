@@ -483,7 +483,8 @@ object Weather {
         var todayHigh: Int? = null
         var todayLow: Int? = null
         if (fItems != null) {
-            for (i in 0 until fItems.length()) {
+            val count = minOf(fItems.length(), 7)
+            for (i in 0 until count) {
                 val it = fItems.getJSONObject(i)
                 val high = it.optInt("temperature", 0)
                 val low = it.optInt("tempe_night", 0)
@@ -492,7 +493,7 @@ object Weather {
                     todayLow = low
                 }
                 val dObj = it.optJSONObject("date")
-                val dateStr = dObj?.optString("anchor") ?: dObj?.optString("date_short") ?: "day-$i"
+                val dateStr = dObj?.optString("anchor")?.removePrefix("d-") ?: dObj?.optString("date_short") ?: "day-$i"
                 val ic = it.optString("icon", "01")
                 dailyList.add(WeatherDaily(
                     date = dateStr,
@@ -516,19 +517,22 @@ object Weather {
         val hourlyList = mutableListOf<WeatherHourly>()
         val hItems = state.optJSONArray("hforecast")
         if (hItems != null) {
+            var isFirst = true
             for (i in 0 until hItems.length()) {
                 val h = hItems.getJSONObject(i)
+                if (h.has("type")) continue // Skip sunrise/sunset markers
                 val timeStr = h.optString("time", "00:00")
-                val tVal = h.optInt("tempe", 0)
+                val tVal = h.optInt("temperature", h.optInt("tempe", 0))
                 val ic = h.optString("icon", "01")
                 val hHour = timeStr.split(':').firstOrNull()?.toIntOrNull() ?: 0
                 hourlyList.add(WeatherHourly(
                     time = timeStr,
-                    isNow = (i == 0),
+                    isNow = isFirst,
                     celsius = tVal,
                     kind = mailRuKindOf(ic),
                     day = hHour in 6..21
                 ))
+                isFirst = false
             }
         }
 

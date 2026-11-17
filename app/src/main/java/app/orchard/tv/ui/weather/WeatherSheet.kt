@@ -252,7 +252,7 @@ fun WeatherSheet(
                             .padding(horizontal = 10.dp, vertical = 10.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Weather.daily.forEach { d ->
+                        Weather.daily.take(7).forEach { d ->
                             DayCard(d = d, modifier = Modifier.weight(1f))
                         }
                     }
@@ -360,7 +360,7 @@ private fun formatDailyDate(dateStr: String, dayIndex: Int): String {
         if (dayIndex == 0) return "Сегодня"
         if (dayIndex == 1) return "Завтра"
         return runCatching {
-            val localDate = java.time.LocalDate.parse(dateStr)
+            val localDate = java.time.LocalDate.parse(dateStr.removePrefix("d-"))
             val dayName = when (localDate.dayOfWeek) {
                 java.time.DayOfWeek.MONDAY -> "Пн"
                 java.time.DayOfWeek.TUESDAY -> "Вт"
@@ -392,7 +392,7 @@ private fun formatDailyDate(dateStr: String, dayIndex: Int): String {
         if (dayIndex == 0) return "Today"
         if (dayIndex == 1) return "Tomorrow"
         return runCatching {
-            val localDate = java.time.LocalDate.parse(dateStr)
+            val localDate = java.time.LocalDate.parse(dateStr.removePrefix("d-"))
             val dayName = localDate.dayOfWeek.getDisplayName(java.time.format.TextStyle.SHORT, Locale.getDefault())
             "$dayName, ${localDate.dayOfMonth}"
         }.getOrDefault(dateStr)
