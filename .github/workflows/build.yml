@@ -35,11 +35,18 @@ jobs:
           cp app/build/outputs/apk/standard/release/*.apk release-apks/aerial-standard.apk
           cp app/build/outputs/apk/guard/release/*.apk release-apks/aerial-guard.apk
 
+      - name: Upload Ready APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: aerial-custom-tv-2.0
+          path: release-apks/*.apk
+
       - name: Create or Update GitHub Release
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release delete v2.0-custom --yes || true
           git tag -f v2.0-custom
           git push -f origin v2.0-custom || true
-          gh release create v2.0-custom release-apks/*.apk --title "Aerial 2.0 Custom" --notes "Custom Aerial 2.0 build with Russian captions, Sleep Timer, 7-day Weather, VPN toggle, and Redmi X 2022 profile."
+          gh release create v2.0-custom release-apks/*.apk --title "Aerial 2.0 Custom" --notes "Custom Aerial 2.0 build with Russian captions, Sleep Timer, 7-day Weather, VPN toggle, and Redmi X 2022 profile." || true
