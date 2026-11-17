@@ -18,10 +18,18 @@
         </trust-anchors>
     </domain-config>
     <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">api.open-meteo.com</domain>
-        <domain includeSubdomains="false">geocoding-api.open-meteo.com</domain>
-        <domain includeSubdomains="false">ipinfo.io</domain>
-        <domain includeSubdomains="false">ipwho.is</domain>
-        <domain includeSubdomains="false">ipv4.icanhazip.com</domain>
+        <domain includeSubdomains="true">api.open-meteo.com</domain>
+        <domain includeSubdomains="true">geocoding-api.open-meteo.com</domain>
+        <domain includeSubdomains="true">ipinfo.io</domain>
+        <domain includeSubdomains="true">ipwho.is</domain>
+        <domain includeSubdomains="true">ipv4.icanhazip.com</domain>
+        <domain includeSubdomains="true">wttr.in</domain>
+        <domain includeSubdomains="true">ip-api.com</domain>
+        <domain includeSubdomains="true">sypexgeo.net</domain>
     </domain-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
 </network-security-config>

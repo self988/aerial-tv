@@ -275,9 +275,22 @@ object Weather {
                 lon = 116.4074f
             }
         }
-        return runCatching { fetchOpenMeteo(lat, lon) }.getOrElse { err ->
-            Log.w(TAG, "Open-Meteo failed, falling back to wttr.in", err)
-            runCatching { fetchWttr(lat, lon) }.getOrElse { throw err }
+        val isRussian = Locale.getDefault().language == "ru"
+        if (isRussian) {
+            return runCatching { fetchWttr(lat, lon) }.getOrElse { errWttr ->
+                Log.w(TAG, "wttr.in failed, falling back to Open-Meteo", errWttr)
+                runCatching { fetchOpenMeteo(lat, lon) }.getOrElse { errOm ->
+                    Log.w(TAG, "Open-Meteo fallback also failed", errOm)
+                    throw errWttr
+                }
+            }
+        }
+        return runCatching { fetchOpenMeteo(lat, lon) }.getOrElse { errOm ->
+            Log.w(TAG, "Open-Meteo failed, falling back to wttr.in", errOm)
+            runCatching { fetchWttr(lat, lon) }.getOrElse { errWttr ->
+                Log.w(TAG, "wttr.in fallback also failed", errWttr)
+                throw errOm
+            }
         }
     }
 
@@ -356,10 +369,11 @@ object Weather {
         val todayObj = weatherDays?.optJSONObject(0)
         val high = todayObj?.optString("maxtempC")?.toIntOrNull()
         val low = todayObj?.optString("mintempC")?.toIntOrNull()
+        val currentHour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
         val now = WeatherNow(
             celsius = temp,
             kind = wttrKindOf(weatherCode),
-            day = true,
+            day = currentHour in 6..21,
             high = high,
             low = low,
         )
@@ -367,6 +381,17 @@ object Weather {
         if (todayObj != null) {
             val hArr = todayObj.optJSONArray("hourly")
             if (hArr != null) {
+                var closestIdx = 0
+                var minDiff = Int.MAX_VALUE
+                for (i in 0 until hArr.length()) {
+                    val h = hArr.getJSONObject(i)
+                    val tInt = h.optInt("time", 0) / 100
+                    val diff = kotlin.math.abs(tInt - currentHour)
+                    if (diff < minDiff) {
+                        minDiff = diff
+                        closestIdx = i
+                    }
+                }
                 for (i in 0 until hArr.length()) {
                     val h = hArr.getJSONObject(i)
                     val tInt = h.optInt("time", 0) / 100
@@ -375,7 +400,7 @@ object Weather {
                     val hCode = h.optInt("weatherCode", 113)
                     hourlyList.add(WeatherHourly(
                         time = timeStr,
-                        isNow = (i == 0),
+                        isNow = (i == closestIdx),
                         celsius = hTemp,
                         kind = wttrKindOf(hCode),
                         day = tInt in 6..21
@@ -407,8 +432,8 @@ object Weather {
         116 -> WeatherKind.PartlyCloudy
         119, 122 -> WeatherKind.Cloudy
         143, 248, 260 -> WeatherKind.Fog
-        227, 230, 323, 326, 329, 332, 335, 338, 368, 371, 392, 395 -> WeatherKind.Snow
-        386, 389, 200 -> WeatherKind.Thunder
+        200, 386, 389 -> WeatherKind.Thunder
+        227, 230, 317, 320, 323, 326, 329, 332, 335, 338, 350, 368, 371, 374, 377, 392, 395 -> WeatherKind.Snow
         else -> WeatherKind.Rain
     }
 
@@ -554,6 +579,7 @@ object Weather {
 
     private fun read(url: String): String {
         val c = URL(url).openConnection() as HttpURLConnection
+        c.setRequestProperty("User-Agent", "curl/7.68.0")
         c.connectTimeout = 4_000
         c.readTimeout = 5_000
         return try {
