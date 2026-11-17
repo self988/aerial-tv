@@ -23,11 +23,11 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build Standard Release APK
-        run: ./gradlew assembleStandardRelease --no-daemon
+      - name: Build Standard & Guard Release APKs
+        run: ./gradlew assembleStandardRelease assembleGuardRelease --no-daemon
 
-      - name: Upload Ready APK
+      - name: Upload Ready APKs
         uses: actions/upload-artifact@v4
         with:
-          name: aerial-custom-tv
-          path: app/build/outputs/apk/standard/release/*.apk
+          name: aerial-custom-tv-2.0
+          path: app/build/outputs/apk/*/release/*.apk
