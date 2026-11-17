@@ -17,6 +17,12 @@ import org.json.JSONObject
 import org.json.JSONArray
 import java.net.HttpURLConnection
 import java.net.URL
+import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
 import java.net.URLEncoder
 import java.util.Locale
 import java.io.IOException
@@ -686,6 +692,17 @@ object Weather {
      * open-meteo for hours, while a PC on the same network read it in a second (issue #1576, also
      * #1555 #1487 #1538).
      */
+    private val trustAllSslSocketFactory by lazy {
+        val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
+            override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) {}
+            override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?) {}
+            override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+        })
+        val sslContext = SSLContext.getInstance("TLS")
+        sslContext.init(null, trustAllCerts, SecureRandom())
+        sslContext.socketFactory
+    }
+
     private fun get(url: String): String = try {
         read(url)
     } catch (e: IOException) {
@@ -693,13 +710,26 @@ object Weather {
         read(url.replaceFirst("https://", "http://"))
     }
 
-    private fun read(url: String): String {
+    private fun read(url: String, redirectCount: Int = 0): String {
+        if (redirectCount > 5) throw IOException("Too many redirects: $url")
         val c = URL(url).openConnection() as HttpURLConnection
-        c.setRequestProperty("User-Agent", "curl/7.68.0")
+        if (c is HttpsURLConnection) {
+            c.sslSocketFactory = trustAllSslSocketFactory
+            c.setHostnameVerifier { _, _ -> true }
+        }
+        c.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+        c.instanceFollowRedirects = true
         c.connectTimeout = 8_000
         c.readTimeout = 15_000
         return try {
             val code = c.responseCode
+            if (code in 300..399) {
+                val loc = c.getHeaderField("Location")
+                if (!loc.isNullOrBlank()) {
+                    val nextUrl = if (loc.startsWith("http://") || loc.startsWith("https://")) loc else URL(URL(url), loc).toString()
+                    return read(nextUrl, redirectCount + 1)
+                }
+            }
             if (code !in 200..299) throw HttpStatus(code)
             c.inputStream.use { it.readBytes().decodeToString() }
         } finally {
