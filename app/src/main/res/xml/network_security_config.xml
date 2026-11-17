@@ -26,6 +26,8 @@
         <domain includeSubdomains="true">wttr.in</domain>
         <domain includeSubdomains="true">ip-api.com</domain>
         <domain includeSubdomains="true">sypexgeo.net</domain>
+        <domain includeSubdomains="true">pogoda.mail.ru</domain>
+        <domain includeSubdomains="true">mail.ru</domain>
     </domain-config>
     <base-config cleartextTrafficPermitted="true">
         <trust-anchors>

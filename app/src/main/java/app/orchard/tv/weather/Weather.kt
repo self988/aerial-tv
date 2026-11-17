@@ -277,11 +277,12 @@ object Weather {
         }
         val isRussian = Locale.getDefault().language == "ru"
         if (isRussian) {
-            return runCatching { fetchWttr(lat, lon) }.getOrElse { errWttr ->
-                Log.w(TAG, "wttr.in failed, falling back to Open-Meteo", errWttr)
-                runCatching { fetchOpenMeteo(lat, lon) }.getOrElse { errOm ->
-                    Log.w(TAG, "Open-Meteo fallback also failed", errOm)
-                    throw errWttr
+            val queryCity = rawPlace ?: "\u0421\u044b\u043a\u0442\u044b\u0432\u043a\u0430\u0440"
+            return runCatching { fetchMailRu(queryCity) }.getOrElse { errMailRu ->
+                Log.w(TAG, "Mail.ru failed, falling back to wttr.in", errMailRu)
+                runCatching { fetchWttr(lat, lon) }.getOrElse { errWttr ->
+                    Log.w(TAG, "wttr.in fallback failed", errWttr)
+                    fetchOpenMeteo(lat, lon)
                 }
             }
         }
@@ -425,6 +426,121 @@ object Weather {
             }
         }
         return WeatherForecast(now = now, hourly = hourlyList, daily = dailyList)
+    }
+
+    private fun fetchMailRu(cityName: String): WeatherForecast {
+        val q = URLEncoder.encode(cityName.trim(), "UTF-8")
+        val suggestUrl = "https://pogoda.mail.ru/ajax/suggest/?q=$q"
+        var pagePath: String? = null
+        runCatching {
+            val json = JSONObject(get(suggestUrl))
+            val items = json.optJSONArray("items")
+            if (items != null) {
+                for (i in 0 until items.length()) {
+                    val grp = items.getJSONObject(i)
+                    val subItems = grp.optJSONArray("items")
+                    if (subItems != null) {
+                        for (j in 0 until subItems.length()) {
+                            val u = subItems.getJSONObject(j).optString("url")
+                            if (u.isNotBlank()) {
+                                pagePath = u
+                                break
+                            }
+                        }
+                    }
+                    if (pagePath != null) break
+                }
+            }
+        }.onFailure { Log.w(TAG, "Mail.ru suggest failed", it) }
+
+        val targetUrl = if (pagePath != null) "https://pogoda.mail.ru$pagePath" else "https://pogoda.mail.ru/prognoz/syktyvkar/"
+        val html = get(targetUrl)
+        val p = html.indexOf("window.__PRELOADED_STATE__PAGE")
+        if (p == -1) throw IOException("No preloaded state in Mail.ru page")
+        val pEnd = html.indexOf("</script>", p)
+        val raw = if (pEnd != -1) html.substring(p, pEnd) else html.substring(p)
+        val eq = raw.indexOf('=')
+        val jsonStr = raw.substring(eq + 1).trim().removeSuffix(";")
+        val state = JSONObject(jsonStr).getJSONObject("data")
+
+        val cur = state.getJSONObject("current")
+        val temp = cur.optInt("tempe", 0)
+        val iconCode = cur.optString("icon", "01")
+        val resolvedCity = state.optJSONObject("city")?.optString("name")?.ifBlank { null }
+        if (resolvedCity != null) {
+            rawPlace = resolvedCity
+            prefs.edit { putString("place", resolvedCity) }
+        }
+
+        val dailyList = mutableListOf<WeatherDaily>()
+        val fItems = state.optJSONObject("forecast")?.optJSONArray("items")
+        var todayHigh: Int? = null
+        var todayLow: Int? = null
+        if (fItems != null) {
+            for (i in 0 until fItems.length()) {
+                val it = fItems.getJSONObject(i)
+                val high = it.optInt("temperature", 0)
+                val low = it.optInt("tempe_night", 0)
+                if (i == 0) {
+                    todayHigh = high
+                    todayLow = low
+                }
+                val dObj = it.optJSONObject("date")
+                val dateStr = dObj?.optString("anchor") ?: dObj?.optString("date_short") ?: "day-$i"
+                val ic = it.optString("icon", "01")
+                dailyList.add(WeatherDaily(
+                    date = dateStr,
+                    dayIndex = i,
+                    high = high,
+                    low = low,
+                    kind = mailRuKindOf(ic)
+                ))
+            }
+        }
+
+        val currentHour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+        val now = WeatherNow(
+            celsius = temp,
+            kind = mailRuKindOf(iconCode),
+            day = currentHour in 6..21,
+            high = todayHigh,
+            low = todayLow,
+        )
+
+        val hourlyList = mutableListOf<WeatherHourly>()
+        val hItems = state.optJSONArray("hforecast")
+        if (hItems != null) {
+            for (i in 0 until hItems.length()) {
+                val h = hItems.getJSONObject(i)
+                val timeStr = h.optString("time", "00:00")
+                val tVal = h.optInt("tempe", 0)
+                val ic = h.optString("icon", "01")
+                val hHour = timeStr.split(':').firstOrNull()?.toIntOrNull() ?: 0
+                hourlyList.add(WeatherHourly(
+                    time = timeStr,
+                    isNow = (i == 0),
+                    celsius = tVal,
+                    kind = mailRuKindOf(ic),
+                    day = hHour in 6..21
+                ))
+            }
+        }
+
+        return WeatherForecast(now = now, hourly = hourlyList, daily = dailyList)
+    }
+
+    private fun mailRuKindOf(icon: String): WeatherKind {
+        val code = icon.toIntOrNull() ?: 1
+        return when (code) {
+            1, 2 -> WeatherKind.Clear
+            3, 4, 5 -> WeatherKind.PartlyCloudy
+            6, 7, 8 -> WeatherKind.Cloudy
+            9, 10 -> WeatherKind.Fog
+            11, 12, 13, 14, 15, 16, 17, 18, 19, 20 -> WeatherKind.Rain
+            21, 22, 23, 24, 25, 26, 27, 28, 29, 30 -> WeatherKind.Snow
+            31, 32, 33, 34, 35 -> WeatherKind.Thunder
+            else -> WeatherKind.Cloudy
+        }
     }
 
     private fun wttrKindOf(code: Int): WeatherKind = when (code) {
@@ -580,8 +696,8 @@ object Weather {
     private fun read(url: String): String {
         val c = URL(url).openConnection() as HttpURLConnection
         c.setRequestProperty("User-Agent", "curl/7.68.0")
-        c.connectTimeout = 4_000
-        c.readTimeout = 5_000
+        c.connectTimeout = 8_000
+        c.readTimeout = 15_000
         return try {
             val code = c.responseCode
             if (code !in 200..299) throw HttpStatus(code)
