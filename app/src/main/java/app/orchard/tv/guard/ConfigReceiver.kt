@@ -17,6 +17,7 @@ import app.orchard.tv.ui.components.UhdCanvas
 import app.orchard.tv.wallpaper.AerialQuality
 import app.orchard.tv.wallpaper.ScreensaverMode
 import app.orchard.tv.wallpaper.Wallpapers
+import app.orchard.tv.weather.Weather
 import kotlinx.coroutines.launch
 
 /**
@@ -58,6 +59,25 @@ class ConfigReceiver : BroadcastReceiver() {
                 runCatching { TileSheet.export(app, name) }.onFailure { android.util.Log.e("AerialTiles", "Export failed", it) }
             }
             resultData = "exporting $name"
+            return
+        }
+        // ... --es weather_city <name>
+        intent.getStringExtra("weather_city")?.let { city ->
+            val app = context.applicationContext
+            @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
+            kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.Default) {
+                Weather.init(app)
+                Weather.choose(city)
+            }
+            resultData = "weather_city=$city"
+            return
+        }
+        // ... --ez weather_refresh true
+        if (intent.getBooleanExtra("weather_refresh", false)) {
+            val app = context.applicationContext
+            Weather.init(app)
+            Weather.refresh()
+            resultData = "weather_refresh=true"
             return
         }
         // ... --es device_profile '{"hidden":[8],"labels":{"6":"HDMI 2"},"xiaomiSources":{"6":24}}'

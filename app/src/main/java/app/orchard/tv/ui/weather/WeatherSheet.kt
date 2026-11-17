@@ -165,6 +165,7 @@ fun WeatherSheet(
                     ) {
                         Pressable(
                             onClick = { Weather.refresh() },
+                            focusRequester = if (Weather.hourly.isEmpty()) firstFocus else null,
                             focusedScale = 1.06f,
                         ) { state ->
                             val bg by animateColorAsState(if (state.focused) Palette.Focus else Palette.Fill, tween(140), label = "btn-bg")

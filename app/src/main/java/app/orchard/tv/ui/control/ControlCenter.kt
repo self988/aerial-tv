@@ -396,6 +396,12 @@ private fun MainPage(
             stringResource(R.string.cc_personalize),
             onClick = { vm.overlay = Overlay.Wallpaper },
         )
+        MenuRow(
+            Glyph.CloudSun,
+            Weather.place ?: stringResource(R.string.weather_page_title),
+            onClick = { vm.overlay = Overlay.ControlCenter(CcPage.Weather) },
+            trailing = "›",
+        )
         // What the TV opens when switched on: easy to forget, and puzzling when it happens.
         vm.bootTargetLabel()?.let { name ->
             MenuRow(

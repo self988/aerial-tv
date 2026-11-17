@@ -644,11 +644,14 @@ fun ShelfClock(
     /** The screensaver is carrying Home's wallpaper on: the date and weather go before the time moves. */
     away: Boolean = false,
     enabled: Boolean = true,
+    clockRequester: FocusRequester? = null,
+    weatherRequester: FocusRequester? = null,
     onClockClick: (() -> Unit)? = null,
     onWeatherClick: (() -> Unit)? = null,
     onClockFocused: ((Boolean) -> Unit)? = null,
     onWeatherFocused: ((Boolean) -> Unit)? = null,
     downRequester: (() -> FocusRequester?)? = null,
+    rightRequester: (() -> FocusRequester?)? = null,
 ) {
     val drift = heldDrift(saving, now)
     val shadow = Shadow(Color.Black.copy(alpha = 0.28f), Offset(0f, 2f), blurRadius = 18f)
@@ -692,11 +695,15 @@ fun ShelfClock(
             Pressable(
                 onClick = onClockClick,
                 enabled = enabled,
+                focusRequester = clockRequester,
                 focusedScale = 1.04f,
                 modifier = timeMod.focusProperties {
-                    if (!hasWeather) {
+                    if (hasWeather && weatherRequester != null) {
+                        down = weatherRequester
+                    } else {
                         downRequester?.invoke()?.let { down = it }
                     }
+                    rightRequester?.invoke()?.let { right = it }
                 },
             ) { state ->
                 LaunchedEffect(state.focused) { onClockFocused?.invoke(state.focused) }
@@ -736,9 +743,12 @@ fun ShelfClock(
                 Pressable(
                     onClick = onWeatherClick,
                     enabled = enabled,
+                    focusRequester = weatherRequester,
                     focusedScale = 1.06f,
                     modifier = aside.padding(top = 14.dp).focusProperties {
+                        clockRequester?.let { up = it }
                         downRequester?.invoke()?.let { down = it }
+                        rightRequester?.invoke()?.let { right = it }
                     },
                 ) { state ->
                     LaunchedEffect(state.focused) { onWeatherFocused?.invoke(state.focused) }
@@ -864,11 +874,14 @@ fun CornerClock(
     saving: Boolean = false,
     away: Boolean = false,
     enabled: Boolean = true,
+    clockRequester: FocusRequester? = null,
+    weatherRequester: FocusRequester? = null,
     onClockClick: (() -> Unit)? = null,
     onWeatherClick: (() -> Unit)? = null,
     onClockFocused: ((Boolean) -> Unit)? = null,
     onWeatherFocused: ((Boolean) -> Unit)? = null,
     downRequester: (() -> FocusRequester?)? = null,
+    rightRequester: (() -> FocusRequester?)? = null,
 ) {
     val drift = heldDrift(saving, now)
     val dim = Color.White.copy(alpha = 0.92f)
@@ -884,8 +897,10 @@ fun CornerClock(
             Pressable(
                 onClick = onClockClick,
                 enabled = enabled,
+                focusRequester = clockRequester,
                 focusedScale = 1.08f,
                 modifier = clockMod.focusProperties {
+                    weatherRequester?.let { right = it }
                     downRequester?.invoke()?.let { down = it }
                 },
             ) { state ->
@@ -924,9 +939,12 @@ fun CornerClock(
                 Pressable(
                     onClick = onWeatherClick,
                     enabled = enabled,
+                    focusRequester = weatherRequester,
                     focusedScale = 1.08f,
                     modifier = aside.padding(start = 6.dp).focusProperties {
+                        clockRequester?.let { left = it }
                         downRequester?.invoke()?.let { down = it }
+                        rightRequester?.invoke()?.let { right = it }
                     },
                 ) { state ->
                     LaunchedEffect(state.focused) { onWeatherFocused?.invoke(state.focused) }

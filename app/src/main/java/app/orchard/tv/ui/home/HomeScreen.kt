@@ -301,6 +301,8 @@ fun HomeScreen(
     fun requester(key: String) = requesters.getOrPut(key) { FocusRequester() }
     val pillRequester = remember { FocusRequester() }
     val vpnRequester = remember { FocusRequester() }
+    val weatherRequester = remember { FocusRequester() }
+    val clockRequester = remember { FocusRequester() }
     val appContext = LocalContext.current
     val firmwareInputPanel = remember {
         SystemProbe.tclInputPanel(appContext) != null || SystemProbe.coocaaInputPanel(appContext) ||
@@ -763,7 +765,9 @@ fun HomeScreen(
                 // one line, top left or beside the pill, so the wallpaper keeps the screen.
                 val downTarget: () -> FocusRequester? = {
                     val key = focusedKey
-                    if (key != null && apps.indexOfFirst { it.key == key } in 0 until columns) requester(key) else null
+                    if (key != null && apps.indexOfFirst { it.key == key } in 0 until columns) requester(key)
+                    else if (apps.isNotEmpty()) requester(apps[0].key)
+                    else null
                 }
                 if (AerialSettings.largeClock) {
                     ShelfClock(
@@ -784,6 +788,8 @@ fun HomeScreen(
                         saving = vm.screensaverVisible,
                         away = carrying,
                         enabled = gridEnabled && moving == null,
+                        clockRequester = clockRequester,
+                        weatherRequester = weatherRequester,
                         onClockClick = { vm.overlay = Overlay.SleepTimer },
                         onWeatherClick = { vm.overlay = Overlay.Weather },
                         onClockFocused = { gained ->
@@ -793,6 +799,7 @@ fun HomeScreen(
                             if (gained && focusedKey == null && apps.isNotEmpty()) focusApp(0)
                         },
                         downRequester = downTarget,
+                        rightRequester = { vpnRequester },
                     )
                 } else if (!clockRight) {
                     CornerClock(
@@ -808,6 +815,8 @@ fun HomeScreen(
                         saving = vm.screensaverVisible,
                         away = carrying,
                         enabled = gridEnabled && moving == null,
+                        clockRequester = clockRequester,
+                        weatherRequester = weatherRequester,
                         onClockClick = { vm.overlay = Overlay.SleepTimer },
                         onWeatherClick = { vm.overlay = Overlay.Weather },
                         onClockFocused = { gained ->
@@ -817,6 +826,7 @@ fun HomeScreen(
                             if (gained && focusedKey == null && apps.isNotEmpty()) focusApp(0)
                         },
                         downRequester = downTarget,
+                        rightRequester = { vpnRequester },
                     )
                 }
 
@@ -837,10 +847,10 @@ fun HomeScreen(
                             label = "slot",
                         )
                         val saverFade = { ((toSaver.value - 0.05f * (index % columns)) / 0.6f).coerceIn(0f, 1f) }
-                        val upTarget: FocusRequester? = if (index >= columns) null else when (index) {
-                            columns - 1 -> pillRequester
-                            columns - 2 -> vpnRequester
-                            else -> null
+                        val upTarget: FocusRequester? = if (index >= columns) null else when {
+                            index >= columns - 1 -> pillRequester
+                            index >= columns - 2 -> vpnRequester
+                            else -> weatherRequester
                         }
                         AppTile(
                             app = app,
@@ -937,6 +947,8 @@ fun HomeScreen(
                     saving = vm.screensaverVisible,
                     away = carrying,
                     enabled = gridEnabled && moving == null,
+                    clockRequester = clockRequester,
+                    weatherRequester = weatherRequester,
                     onClockClick = { vm.overlay = Overlay.SleepTimer },
                     onWeatherClick = { vm.overlay = Overlay.Weather },
                     onClockFocused = { gained ->
@@ -949,6 +961,7 @@ fun HomeScreen(
                         val key = focusedKey
                         if (key != null && apps.indexOfFirst { it.key == key } in 0 until columns) requester(key) else null
                     },
+                    rightRequester = { vpnRequester },
                 )
             }
             VpnPill(
@@ -959,6 +972,7 @@ fun HomeScreen(
                     .diagLayer("vpn-pill")
                     .padding(end = 10.dp)
                     .focusProperties {
+                        left = weatherRequester
                         right = pillRequester
                         val key = focusedKey
                         if (key != null && apps.indexOfFirst { it.key == key } in 0 until columns) down = requester(key)
@@ -1016,9 +1030,9 @@ fun HomeScreen(
                         val key = focusedKey
                         val rowEnd = minOf(apps.size, columns) - 1
                         if (key != null && apps.indexOfFirst { it.key == key } in 0..rowEnd) {
-                            down = requester(key); left = requester(key); right = requester(key)
+                            down = requester(key)
                         } else if (rowEnd >= 0) {
-                            left = requester(apps[rowEnd].key); right = requester(apps[0].key)
+                            down = requester(apps[rowEnd].key)
                         }
                     }
                     .graphicsLayer {

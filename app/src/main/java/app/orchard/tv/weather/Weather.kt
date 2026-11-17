@@ -99,6 +99,16 @@ object Weather {
         prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         rawPlace = prefs.getString("place", null)
         chosen = prefs.getBoolean("chosen", false)
+        if (rawPlace == null && Locale.getDefault().language == "ru") {
+            rawPlace = "Сыктывкар"
+            prefs.edit {
+                putString("place", "Сыктывкар")
+                if (prefs.getFloat("lat", Float.NaN).isNaN()) {
+                    putFloat("lat", 61.6688f)
+                    putFloat("lon", 50.8355f)
+                }
+            }
+        }
         if (System.currentTimeMillis() - prefs.getLong("fetched_at", 0) < STALE_MS) {
             val kind = runCatching { WeatherKind.valueOf(prefs.getString("kind", null) ?: "") }.getOrNull()
             if (kind != null) now = WeatherNow(
@@ -239,9 +249,6 @@ object Weather {
                 lat = guess.lat
                 lon = guess.lon
                 val city = guess.city
-                // The services name the city in English ("Foshan"); in China, say it as the owner would.
-                // A name the table spells otherwise, or a district's, stayed in pinyin among Chinese
-                // text (Hisense 43E3G, issue #1195): then the main listed place at that point names it.
                 val zh = city?.takeIf { guess.cn && Locale.getDefault().language == "zh" }
                     ?.let {
                         (Cities.near(app, it, lat.toDouble(), lon.toDouble(), km = 80.0, ascii = true)
@@ -257,6 +264,24 @@ object Weather {
                 }
             }
         }
+        if (lat.isNaN() || lon.isNaN()) {
+            if (Locale.getDefault().language == "ru") {
+                lat = 61.6688f
+                lon = 50.8355f
+                if (rawPlace == null) rawPlace = "Сыктывкар"
+                prefs.edit { putFloat("lat", lat); putFloat("lon", lon); putString("place", "Сыктывкар") }
+            } else {
+                lat = 39.9042f
+                lon = 116.4074f
+            }
+        }
+        return runCatching { fetchOpenMeteo(lat, lon) }.getOrElse { err ->
+            Log.w(TAG, "Open-Meteo failed, falling back to wttr.in", err)
+            runCatching { fetchWttr(lat, lon) }.getOrElse { throw err }
+        }
+    }
+
+    private fun fetchOpenMeteo(lat: Float, lon: Float): WeatherForecast {
         val json = JSONObject(get("https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,weather_code,is_day&hourly=temperature_2m,weather_code,is_day&daily=weather_code,temperature_2m_max,temperature_2m_min&forecast_days=7&timezone=auto"))
         val current = json.getJSONObject("current")
         val dailyObj = json.optJSONObject("daily")
@@ -321,16 +346,105 @@ object Weather {
         return WeatherForecast(now = now, hourly = hourlyList, daily = dailyList)
     }
 
-    /**
-     * Where the connection is: ipwho.is first, ipinfo.io after it. ipinfo.io puts China Mobile's
-     * pooled addresses in the wrong province (a Foshan, Guangdong line came out as Jiaxing,
-     * Zhejiang), where ipwho.is names the city; both are keyless and answer over HTTPS.
-     */
+    private fun fetchWttr(lat: Float, lon: Float): WeatherForecast {
+        val jsonStr = get("https://wttr.in/$lat,$lon?format=j1")
+        val json = JSONObject(jsonStr)
+        val cur = json.getJSONArray("current_condition").getJSONObject(0)
+        val temp = cur.getString("temp_C").toIntOrNull() ?: 0
+        val weatherCode = cur.optInt("weatherCode", 113)
+        val weatherDays = json.optJSONArray("weather")
+        val todayObj = weatherDays?.optJSONObject(0)
+        val high = todayObj?.optString("maxtempC")?.toIntOrNull()
+        val low = todayObj?.optString("mintempC")?.toIntOrNull()
+        val now = WeatherNow(
+            celsius = temp,
+            kind = wttrKindOf(weatherCode),
+            day = true,
+            high = high,
+            low = low,
+        )
+        val hourlyList = mutableListOf<WeatherHourly>()
+        if (todayObj != null) {
+            val hArr = todayObj.optJSONArray("hourly")
+            if (hArr != null) {
+                for (i in 0 until hArr.length()) {
+                    val h = hArr.getJSONObject(i)
+                    val tInt = h.optInt("time", 0) / 100
+                    val timeStr = String.format(Locale.US, "%02d:00", tInt)
+                    val hTemp = h.optString("tempC").toIntOrNull() ?: 0
+                    val hCode = h.optInt("weatherCode", 113)
+                    hourlyList.add(WeatherHourly(
+                        time = timeStr,
+                        isNow = (i == 0),
+                        celsius = hTemp,
+                        kind = wttrKindOf(hCode),
+                        day = tInt in 6..21
+                    ))
+                }
+            }
+        }
+        val dailyList = mutableListOf<WeatherDaily>()
+        if (weatherDays != null) {
+            for (i in 0 until weatherDays.length()) {
+                val d = weatherDays.getJSONObject(i)
+                val max = d.optString("maxtempC").toIntOrNull() ?: 0
+                val min = d.optString("mintempC").toIntOrNull() ?: 0
+                val firstHCode = d.optJSONArray("hourly")?.optJSONObject(0)?.optInt("weatherCode", 113) ?: 113
+                dailyList.add(WeatherDaily(
+                    date = d.optString("date", ""),
+                    dayIndex = i,
+                    high = max,
+                    low = min,
+                    kind = wttrKindOf(firstHCode)
+                ))
+            }
+        }
+        return WeatherForecast(now = now, hourly = hourlyList, daily = dailyList)
+    }
+
+    private fun wttrKindOf(code: Int): WeatherKind = when (code) {
+        113 -> WeatherKind.Clear
+        116 -> WeatherKind.PartlyCloudy
+        119, 122 -> WeatherKind.Cloudy
+        143, 248, 260 -> WeatherKind.Fog
+        227, 230, 323, 326, 329, 332, 335, 338, 368, 371, 392, 395 -> WeatherKind.Snow
+        386, 389, 200 -> WeatherKind.Thunder
+        else -> WeatherKind.Rain
+    }
+
     private class Guess(val lat: Float, val lon: Float, val city: String?, val cn: Boolean)
 
     private fun locate(): Guess? {
-        // Over IPv6 the databases place China Mobile's prefixes in another city of the province
-        // (a Foshan line came out as Jiangmen), so the IPv4 address is asked for and looked up.
+        // 1. Try ip-api.com (fast, no key, works great in Russia and worldwide)
+        runCatching {
+            val ip = JSONObject(get("http://ip-api.com/json"))
+            if (ip.optString("status") == "success") {
+                return Guess(
+                    ip.getDouble("lat").toFloat(),
+                    ip.getDouble("lon").toFloat(),
+                    ip.optString("city").ifBlank { null },
+                    ip.optString("countryCode").equals("CN", ignoreCase = true),
+                )
+            }
+        }.onFailure { Log.w(TAG, "ip-api.com", it) }
+
+        // 2. Try Sypex Geo (Russia dedicated geolocation)
+        runCatching {
+            val json = JSONObject(get("https://api.sypexgeo.net/json/"))
+            val cityObj = json.optJSONObject("city")
+            val countryObj = json.optJSONObject("country")
+            if (cityObj != null) {
+                val cityName = cityObj.optString("name_ru").ifBlank { cityObj.optString("name_en") }
+                return Guess(
+                    cityObj.getDouble("lat").toFloat(),
+                    cityObj.getDouble("lon").toFloat(),
+                    cityName.ifBlank { null },
+                    countryObj?.optString("iso") == "CN",
+                )
+            }
+        }.onFailure { Log.w(TAG, "sypexgeo", it) }
+
+        // 3. Try ipwho.is
         val v4 = runCatching { get("https://ipv4.icanhazip.com").trim() }.getOrNull()
             ?.takeIf { Regex("""^\d{1,3}(\.\d{1,3}){3}$""").matches(it) }
         runCatching {
@@ -344,8 +458,9 @@ object Weather {
                 )
             }
         }.onFailure { Log.w(TAG, "ipwho.is", it) }
+
+        // 4. Try ipinfo.io
         runCatching {
-            // ipinfo.io: no key, and its "loc" is "lat,lon".
             val ip = JSONObject(get("https://ipinfo.io/json"))
             val loc = ip.getString("loc").split(',')
             return Guess(
@@ -355,14 +470,15 @@ object Weather {
                 ip.optString("country") == "CN",
             )
         }.onFailure { Log.w(TAG, "ipinfo.io", it) }
+
+        // 5. Fallback for Russian locale: default to Syktyvkar
+        if (Locale.getDefault().language == "ru") {
+            return Guess(61.6688f, 50.8355f, "Сыктывкар", false)
+        }
+
         return null
     }
 
-    /**
-     * A place chosen before 1.29 came from Open-Meteo's geocoder, which took 安庆 for a village in
-     * Jiangsu. If a listed city of that name is not where the chosen point is, the city is meant.
-     * Checked once.
-     */
     private fun correctChosenPlace(lat: Float, lon: Float): Cities.City? {
         val name = prefs.getString("place", null)
         val city = name?.let { runCatching { Cities.find(app, it) }.getOrNull() }
@@ -377,23 +493,16 @@ object Weather {
         return city
     }
 
-    /**
-     * Names the place (from the phone page) and fetches its weather at once. Chinese names are
-     * looked up in Aerial's own list first, others (pinyin, places abroad) in Open-Meteo's geocoder.
-     * False when there is no such place.
-     */
     suspend fun choose(name: String): Boolean {
         val hit = withContext(Dispatchers.IO) {
-            runCatching { Cities.find(app, name) }.onFailure { Log.w(TAG, "could not read the city list", it) }.getOrNull()
-                ?.let { Triple(it.lat, it.lon, it.name) }
+            RussianCities.findCoordinates(name)
+                ?: runCatching { Cities.find(app, name) }.onFailure { Log.w(TAG, "could not read the city list", it) }.getOrNull()
+                    ?.let { Triple(it.lat, it.lon, it.name) }
                 ?: runCatching {
                     val q = URLEncoder.encode(name.trim(), "UTF-8")
-                    val results = JSONObject(get("https://geocoding-api.open-meteo.com/v1/search?name=$q&count=10&language=zh&format=json"))
+                    val results = JSONObject(get("https://geocoding-api.open-meteo.com/v1/search?name=$q&count=10&language=ru&format=json"))
                         .optJSONArray("results")
                     val all = (0 until (results?.length() ?: 0)).map { results!!.getJSONObject(it) }
-                    // The most populous of the name, a seat before a village where neither says: GeoNames
-                    // codes some cities as plain places, so "jinzhou" took 晋州, a county seat in Hebei
-                    // (PPLA3, no population), over 锦州 in Liaoning (PPL, 1.5 million; issue #1367).
                     fun seat(it: JSONObject) = it.optString("feature_code").let { c -> c.startsWith("PPLA") || c == "PPLC" }
                     val best = all.maxWithOrNull(compareBy<JSONObject>({ it.optLong("population") }, { seat(it) }, { -all.indexOf(it) }))
                     best?.let { Triple(it.getDouble("latitude"), it.getDouble("longitude"), it.optString("name").ifBlank { name.trim() }) }
@@ -412,8 +521,7 @@ object Weather {
         return true
     }
 
-    /** Back to guessing the place from the network. */
-    fun useNetworkLocation() {
+        fun useNetworkLocation() {
         prefs.edit { putBoolean("chosen", false); remove("lat"); remove("lon"); remove("located_at") }
         chosen = false
         refresh()
@@ -446,8 +554,8 @@ object Weather {
 
     private fun read(url: String): String {
         val c = URL(url).openConnection() as HttpURLConnection
-        c.connectTimeout = 8_000
-        c.readTimeout = 10_000
+        c.connectTimeout = 4_000
+        c.readTimeout = 5_000
         return try {
             val code = c.responseCode
             if (code !in 200..299) throw HttpStatus(code)
