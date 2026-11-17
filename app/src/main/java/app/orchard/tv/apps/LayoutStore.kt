@@ -209,6 +209,20 @@ class LayoutStore(context: Context) {
 /** First-run arrangement: streaming apps first, the TV's own utilities last. */
 private object Defaults {
     private val preferred = listOf(
+        "ru.kinopoisk.tv",                  // Кинопоиск
+        "ru.ivi.client",                     // Иви
+        "ru.videos.vk",                      // VK Видео
+        "mobi.zona",                         // Zona
+        "top.rootu.prisma",                  // Prisma
+        "io.gh.reisxd.tizentube.cobalt",      // TizenTube
+        "top.rootu.lampa",                   // Lampa
+        "ru.yourok.torrserve",               // TorrServe
+        "org.videolan.vlc",                  // VLC
+        "su.happ.proxyutility",              // Happ Proxy
+        "org.amnezia.vpn",                  // Amnezia VPN
+        "io.github.romanvht.byedpi",         // ByeDPI
+        "com.alphainventor.filemanager",     // File Manager
+        "com.internet.tvbrowser",            // TV Browser
         "com.ktcp.video",                  // 云视听极光
         "com.gitvdemo.video",              // 银河奇异果
         "com.cibn.tv",                     // CIBN 酷喵
@@ -226,6 +240,16 @@ private object Defaults {
     )
 
     private val utilities = listOf(
+        "com.miui.analytics",
+        "com.xm.webcontent",
+        "com.mitv.shoplugin",
+        "com.google.android.gms",
+        "com.google.android.gsf",
+        "com.google.android.gsf.login",
+        "tv.eva.store",
+        "cm.aptoidetv.pt",
+        "ru.vk.store.tv",
+        "jp.co.c_lis.ccl.morelocale",
         "com.xiaomi.mitv.settings",
         "com.android.tv.settings",
         "com.xiaomi.mitv.tvmanager",
@@ -244,5 +268,11 @@ private object Defaults {
     fun hidden(installed: Set<String>): Set<String> = buildSet {
         // Xiaomi's own settings app covers everything AOSP settings does, and more.
         if ("com.xiaomi.mitv.settings" in installed) add("com.android.tv.settings")
+        if ("com.miui.analytics" in installed) add("com.miui.analytics")
+        if ("com.xm.webcontent" in installed) add("com.xm.webcontent")
+        if ("com.mitv.shoplugin" in installed) add("com.mitv.shoplugin")
+        if ("com.google.android.gms" in installed) add("com.google.android.gms")
+        if ("com.google.android.gsf" in installed) add("com.google.android.gsf")
+        if ("com.google.android.gsf.login" in installed) add("com.google.android.gsf.login")
     }
 }

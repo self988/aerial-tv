@@ -50,9 +50,17 @@ android {
     // The TVs only accept updates signed with the key Aerial was first installed with. That key
     // lives outside version control in local/ (see docs/HANDOFF.md); without it the build falls
     // back to this machine's debug key, which installs fresh but cannot update existing copies.
+    val permanentKeystore = rootProject.file("aerial.keystore")
     val signingProps = rootProject.file("local/signing.properties")
     signingConfigs {
-        if (signingProps.exists()) {
+        if (permanentKeystore.exists()) {
+            create("aerial") {
+                storeFile = permanentKeystore
+                storePassword = "aerial123"
+                keyAlias = "aerial"
+                keyPassword = "aerial123"
+            }
+        } else if (signingProps.exists()) {
             val p = Properties().apply { signingProps.inputStream().use { load(it) } }
             create("aerial") {
                 storeFile = rootProject.file("local/" + p.getProperty("storeFile"))
