@@ -18,6 +18,7 @@ import android.media.AudioManager
 import android.os.Build
 import android.net.NetworkCapabilities
 import android.net.Uri
+import android.content.res.Configuration
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -77,6 +78,7 @@ import app.orchard.tv.apps.SOURCE_KEY_PREFIX
 import app.orchard.tv.wallpaper.PhoneServer
 import app.orchard.tv.wallpaper.Wallpapers
 import app.orchard.tv.system.BootOpen
+import app.orchard.tv.system.CecSwitch
 import app.orchard.tv.system.DiagLog
 import app.orchard.tv.system.FrameStats
 import app.orchard.tv.wallpaper.AerialFormats
@@ -122,6 +124,15 @@ class MainActivity : ComponentActivity() {
             Wallpapers.rotateIfDue()
         }
     }
+
+    /**
+     * Each minute while Home is in front: "My Photos, in turn" with a short interval moves on
+     * (issue #1314). Registered only while resumed; a check that is not due does nothing.
+     */
+    private val minuteReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) = Wallpapers.rotateIfDue()
+    }
+    private var minuteReceiverOn = false
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = runOnUiThread {
@@ -267,6 +278,8 @@ class MainActivity : ComponentActivity() {
         FontWarmup.start(this)
         val uhd = UhdCanvas.scale(this)
         Wallpapers.init(this)
+        // A receiver may have started the wallpapers with the app's size; Home's window is the one.
+        Wallpapers.fitScreen(this)
         Weather.init(this)
         Updates.init(this)
         lifecycleScope.launch(Dispatchers.IO) { SelfCompile.init(this@MainActivity) }
@@ -717,6 +730,7 @@ class MainActivity : ComponentActivity() {
         }
         DiagLog.i("screensaver starts (${Wallpapers.screensaver})")
         vm.screensaverVisible = true
+        SelfCompile.onScreensaver { vm.screensaverVisible }
         // Holding the screen on keeps the firmware's screensaver from starting over ours. After a
         // long stretch, let go so the TV's own power policy can still turn the panel off. Not
         // where the screen never goes off: letting go only handed it to the firmware's
@@ -915,7 +929,12 @@ class MainActivity : ComponentActivity() {
             idleHandler.post { startScreensaver(asked = true) }
             return
         }
-        if (intent.hasCategory(Intent.CATEGORY_HOME) || intent.action == Intent.ACTION_MAIN) {
+        // Some Skyworth/Coocaa firmwares answer Home by starting persist.service.homepage.pkg/cls
+        // themselves, with no action and no category: Home on Home never reset the focus
+        // (7S77_M2, MStar M7221, Android 8.0, issue #1508; the reporter patched 1.95 with this
+        // and checked it). Aerial's own starts of this activity all carry ACTION_MAIN.
+        val homeByComponent = intent.action == null && intent.component?.packageName == packageName
+        if (intent.hasCategory(Intent.CATEGORY_HOME) || intent.action == Intent.ACTION_MAIN || homeByComponent) {
             // Since 1.11 Home Guard answers Home from an app by bringing Aerial back with this same
             // intent, so the intent alone cannot tell Home-on-Home from coming back from an app.
             vm.onHomePressed(resetFocus = !openedAppSinceHome)
@@ -995,9 +1014,21 @@ class MainActivity : ComponentActivity() {
         resumeWork()
     }
 
+    /** The screen turned (to portrait, #1416) or resized: pictures follow the window's new shape. */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (realStarted) Wallpapers.fitScreen(this)
+    }
+
     /** What onResume does once the user is unlocked; also run by a start that was locked before. */
     private fun resumeWork() {
         vm.resumed = true
+        CecSwitch.register(this)
+        if (!minuteReceiverOn) {
+            // TIME_TICK is a protected system broadcast; it is only delivered to registered receivers.
+            ContextCompat.registerReceiver(this, minuteReceiver, IntentFilter(Intent.ACTION_TIME_TICK), ContextCompat.RECEIVER_NOT_EXPORTED)
+            minuteReceiverOn = true
+        }
         KidsWatch.homeInFront = true
         idleHandler.removeCallbacks(endHomeBounce)
         vm.homeBounce = false
@@ -1008,7 +1039,7 @@ class MainActivity : ComponentActivity() {
         }
         restartIdleTimer()
         GuardSetup.setHomeInFront(this, true)
-        HomeGuardService.onAerialResumed()
+        HomeGuardService.onAerialResumed(this)
         Updates.onHomeResumed()
         vm.refreshSystem()
         if (!resumedInProcess) {
@@ -1045,6 +1076,7 @@ class MainActivity : ComponentActivity() {
         super.onPause()
         if (locked) return
         vm.resumed = false
+        if (minuteReceiverOn) { runCatching { unregisterReceiver(minuteReceiver) }; minuteReceiverOn = false }
         KidsWatch.homeInFront = false
         Updates.onHomePaused()
         DiagLog.i("onPause")
@@ -1126,19 +1158,20 @@ class MainActivity : ComponentActivity() {
         }
         try {
             FilmAfterInput.noteOpened(this, app.launchIntent())
+            if (app.source != null) allowInputThroughHome(app.launchIntent())
             if (HisenseSources.open(this, app.launchIntent())) return
             startActivity(settingsLaunchIntent(this, app.launchIntent()), options)
         } catch (e: Exception) {
             // XGIMI (GMUI): nothing answers the passthrough intent a source tile carries, so the tile
             // opens the source page of its settings service instead (issue #241).
-            if (app.source != null && SystemProbe.openInputPicker(this)) return
+            if (app.source != null && (SystemProbe.openXgimiInput(this, app.launchIntent()) || SystemProbe.openInputPicker(this))) return
             // PatchWall's entry needs its permission whether or not the guard runs, and with the
             // guard switched off its tile did nothing (MiTV-ANSP0, Android 9, issue #971).
             if (e is SecurityException && startStockLauncher(app)) {
                 // Opened on purpose all the same. In a process the firmware had just killed the
                 // guard had not bound yet, so isStockHome said no above, and once bound it took
                 // PatchWall for one the TV raised (MiTV-ANSP0, Android 9, issue #971, PR #1216).
-                if (isHomeApp(app.packageName)) HomeGuardService.allowStockLauncher()
+                if (isHomeApp(app.packageName)) HomeGuardService.allowStockLauncher(this)
                 return
             }
             Toast.makeText(this, getString(R.string.launch_failed, app.label), Toast.LENGTH_SHORT).show()
@@ -1193,8 +1226,19 @@ class MainActivity : ComponentActivity() {
         }.isSuccess
     }
 
+    /**
+     * An input opened through an activity that is also one of the TV's Homes, which the guard
+     * would take for the stock launcher and close: JMGO H931's com.jmgo.tv/.MainActivity tunes the
+     * input and is a Home candidate as well (issue #1481). Opened on purpose, like its tile.
+     */
+    private fun allowInputThroughHome(intent: Intent) {
+        val pkg = intent.component?.packageName ?: return
+        if (pkg != packageName && isHomeApp(pkg)) HomeGuardService.allowStockLauncher(this)
+    }
+
     private fun open(intent: Intent) {
         FilmAfterInput.noteOpened(this, intent)
+        if (intent.hasExtra("inputSrc")) allowInputThroughHome(intent)
         // Older Konka: the input first, then its page, which only shows what is on (issue #710).
         if (KonkaSources.needsSwitch(intent)) {
             val app = applicationContext
@@ -1213,7 +1257,9 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             // XGIMI (GMUI): its inputs carry a passthrough intent that nothing answers, so switching
             // goes through the source page of its settings service (issue #241).
-            if (intent.data?.host == "android.media.tv" && SystemProbe.openInputPicker(this)) return
+            if (intent.data?.host == "android.media.tv" &&
+                (SystemProbe.openXgimiInput(this, intent) || SystemProbe.openInputPicker(this))
+            ) return
             LaunchFallback.next()?.let { return open(it) }
             Toast.makeText(this, R.string.unavailable, Toast.LENGTH_SHORT).show()
         }

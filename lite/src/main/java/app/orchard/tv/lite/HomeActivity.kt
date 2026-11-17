@@ -87,6 +87,10 @@ class HomeActivity : Activity(), HomeView.Host {
         })
         @Suppress("DEPRECATION")
         registerReceiver(connectivity, IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION))
+        registerReceiver(clockSet, IntentFilter().apply {
+            addAction(Intent.ACTION_TIME_CHANGED)
+            addAction(Intent.ACTION_TIMEZONE_CHANGED)
+        })
         if (savedInstanceState == null && SystemClock.elapsedRealtime() < 3 * 60 * 1000L) openBootApp()
     }
 
@@ -102,6 +106,7 @@ class HomeActivity : Activity(), HomeView.Host {
         Kids.onNotice = {}
         unregisterReceiver(packages)
         unregisterReceiver(connectivity)
+        unregisterReceiver(clockSet)
         hideSaver()
         proxy.stop()
         PhoneServer.stop()
@@ -162,7 +167,11 @@ class HomeActivity : Activity(), HomeView.Host {
     /** The Home key while Home is in front: back to the first tile, as the full app does. */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (intent.hasCategory(Intent.CATEGORY_HOME)) {
+        // Some Skyworth/Coocaa firmwares answer Home by starting the home component themselves,
+        // with no action and no category (7S77_M2, Android 8.0, issue #1508, the full app; not
+        // tried on a Lite TV). Lite's own starts of this activity carry ACTION_MAIN.
+        val homeByComponent = intent.action == null && intent.component?.packageName == packageName
+        if (intent.hasCategory(Intent.CATEGORY_HOME) || homeByComponent) {
             hideSaver()
             closeAll()
             home.reset()
@@ -200,6 +209,25 @@ class HomeActivity : Activity(), HomeView.Host {
 
     // ---- loading ----
 
+    /** "My Photos, in turn" on to its next photo when due: on coming back to Home and each minute while up. */
+    override fun minute() {
+        panels.forEach { (it as? ControlCenter)?.refreshTime() }
+        if (resumed && Wallpapers.rotationDue()) loadBackdrop()
+    }
+
+    /**
+     * The TV's clock set, or its time zone: a box that boots at 8:00 on 1 January and sets the
+     * time from the network a while later kept 8:00 on Home until the next minute's tick (Android
+     * 4.4 box, Lite 1.30, issue #1588). The full app listens the same way (HomeChrome).
+     */
+    private val clockSet = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            home.refreshClock()
+            saver?.refreshTime()
+            panels.forEach { (it as? ControlCenter)?.refreshTime() }
+        }
+    }
+
     private fun loadBackdrop() {
         work.execute {
             val b = runCatching { Wallpapers.load() }
@@ -219,12 +247,22 @@ class HomeActivity : Activity(), HomeView.Host {
 
     private var dailyCheckedAt = 0L
 
-    /** Bing's photo of the day: looked at again when Home is back, at most every three hours. */
-    private fun refreshDaily() {
-        if (SystemClock.elapsedRealtime() - dailyCheckedAt < 3 * 60 * 60 * 1000L && dailyCheckedAt != 0L) return
+    /**
+     * Bing's photo of the day: looked at again when Home is back, at most every three hours, and
+     * after a failed fetch as soon as a network comes up ([networkUp]) or half an hour on. Home
+     * started at boot before Wi-Fi joined failed once and stayed in front, so it never looked
+     * again (Lite in /system, ZTE W152D, Android 11, issue #1443).
+     */
+    private fun refreshDaily(networkUp: Boolean = false) {
+        val retry = Wallpapers.dailyFailed && (networkUp || SystemClock.elapsedRealtime() - dailyCheckedAt >= DAILY_RETRY_MS)
+        if (!retry && SystemClock.elapsedRealtime() - dailyCheckedAt < 3 * 60 * 60 * 1000L && dailyCheckedAt != 0L) return
         dailyCheckedAt = SystemClock.elapsedRealtime()
+        handler.removeCallbacks(dailyRetry)
         work.execute {
-            if (!Wallpapers.refreshDaily()) return@execute
+            if (!Wallpapers.refreshDaily()) {
+                if (Wallpapers.dailyFailed) handler.post { if (!isFinishing) handler.postDelayed(dailyRetry, DAILY_RETRY_MS) }
+                return@execute
+            }
             handler.post {
                 Wallpapers.rebuildList()
                 if (Wallpapers.selectedId.startsWith("daily:") || Wallpapers.resolve()?.kind == WallpaperKind.Daily) loadBackdrop()
@@ -276,8 +314,19 @@ class HomeActivity : Activity(), HomeView.Host {
      * showed Wi-Fi whatever the network until it took the VPN badge (issue #809).
      */
     private val connectivity = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) = showNetwork()
+        override fun onReceive(context: Context, intent: Intent) {
+            showNetwork()
+            val connected = runCatching {
+                (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).activeNetworkInfo?.isConnected == true
+            }.getOrDefault(false)
+            if (!connected) return
+            // What failed before the network was there (issue #1443).
+            if (Wallpapers.dailyFailed) refreshDaily(networkUp = true)
+            Weather.refreshIfStale({ work.execute(it) }, networkUp = true) { handler.post { showWeather() } }
+        }
     }
+
+    private val dailyRetry = Runnable { refreshDaily() }
 
     private fun showNetwork() {
         work.execute {
@@ -374,12 +423,15 @@ class HomeActivity : Activity(), HomeView.Host {
     override fun openFolder(folder: AppEntry) {
         val f = folder.folder ?: return
         val inside = folderApps[f.id] ?: return
-        showPanel(FolderView(this, ::closePanel, f.id, f.name, inside, launch = ::launch, menu = { app, tile -> openMenu(app, tile) }), keepBelow = false)
+        showPanel(FolderView(this, ::closePanel, f.id, f.name, inside, launch = ::launch, menu = { app, tile -> openMenu(app, tile) },
+            moveTo = { key, target -> layout.moveInFolder(key, target); arrange() }), keepBelow = false)
     }
 
     override fun openMenu(app: AppEntry, tile: android.view.View) {
-        // Nothing to rearrange in Kids and Elders mode (#1013).
-        if (!Kids.active) showMenu(app, tileRect(tile), MenuPage.Main)
+        // Nothing to rearrange in Kids and Elders mode (#1013), nor on a locked Home: say where it unlocks.
+        if (Kids.active) return
+        if (LiteSettings.homeLocked) { Toast.makeText(this, getString(R.string.home_locked_notice), Toast.LENGTH_LONG).show(); return }
+        showMenu(app, tileRect(tile), MenuPage.Main)
     }
 
     private enum class MenuPage { Main, Folders, Rename }
@@ -406,8 +458,13 @@ class HomeActivity : Activity(), HomeView.Host {
                 add(Glyph.Pencil, R.string.menu_rename_folder, "›") { showMenu(app, anchor, MenuPage.Rename) }
                 add(Glyph.Folder, R.string.menu_ungroup) { closeMenu(); layout.ungroup(folder.id); folderTiles.remove(folder.id); arrange() }
             } else {
+                // In a folder too: its apps keep an order of their own (issue #1344).
+                add(Glyph.Move, R.string.menu_move) {
+                    closeMenu()
+                    val open = panels.lastOrNull() as? FolderView
+                    if (holder != null && open != null) open.startMove(app.key) else home.startMove(app)
+                }
                 if (holder != null) add(Glyph.Folder, R.string.menu_out_of_folder) { closeMenu(); layout.takeOutOfFolder(app.key); arrange() }
-                else add(Glyph.Move, R.string.menu_move) { closeMenu(); home.startMove(app) }
                 add(Glyph.Folder, R.string.menu_to_folder, "›") { showMenu(app, anchor, MenuPage.Folders) }
                 add(Glyph.EyeSlash, R.string.menu_hide) { closeMenu(); layout.hide(app.key); arrange() }
                 // A picture chosen on the phone page; changing it is done there.
@@ -511,6 +568,11 @@ class HomeActivity : Activity(), HomeView.Host {
             },
             onLayout = { home.applySettings(); showWeather(); refaceIfResized() },
             onHidden = { whenUnlocked(::openHidden) },
+            // Locking needs nothing; unlocking, the PIN where one is set.
+            onHomeLock = { on ->
+                if (on) { LiteSettings.chooseHomeLocked(true); refreshPersonalize() }
+                else whenUnlocked { LiteSettings.chooseHomeLocked(false); refreshPersonalize() }
+            },
             onSaverNow = { closeAll(); showSaver() },
             onPin = { on ->
                 if (on) showPanel(PinPad(this, ::closePanel, PinPad.Mode.Create) { closePanel(); refreshPersonalize() }, keepBelow = true)
@@ -827,6 +889,7 @@ class HomeActivity : Activity(), HomeView.Host {
     companion object {
         private const val TAG = "AerialLite"
         private const val SCREENSAVER_HOLD_MS = 4 * 60 * 60 * 1000L
+        private const val DAILY_RETRY_MS = 30 * 60 * 1000L
         private const val HOME_LAYER = 1
         private const val GRID_LAYER = 2
         /** The TVs' settings apps, kept behind the PIN (the full app's SystemProbe.isSettingsApp). */
