@@ -127,7 +127,10 @@ fun rememberNow(): State<LocalDateTime> {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val now = remember { mutableStateOf(LocalDateTime.now()) }
     DisposableEffect(context, lifecycle) {
-        fun refresh() { now.value = LocalDateTime.now() }
+        fun refresh() {
+            now.value = LocalDateTime.now()
+            Weather.refreshIfStale()
+        }
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) = refresh()
         }

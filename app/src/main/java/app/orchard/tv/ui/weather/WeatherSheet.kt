@@ -68,6 +68,7 @@ fun WeatherSheet(
     val firstFocus = remember { FocusRequester() }
     LaunchedEffect(visible) {
         if (!visible) return@LaunchedEffect
+        Weather.refresh()
         withFrameNanos { }
         runCatching { firstFocus.requestFocus() }
     }
@@ -177,7 +178,11 @@ fun WeatherSheet(
                             ) {
                                 GlyphIcon(Glyph.CloudSun, fg, 18.dp)
                                 BasicText(
-                                    if (Locale.getDefault().language == "ru") "Обновить" else "Refresh",
+                                    if (Weather.refreshing) {
+                                        if (Locale.getDefault().language == "ru") "Обновление…" else "Refreshing…"
+                                    } else {
+                                        if (Locale.getDefault().language == "ru") "Обновить" else "Refresh"
+                                    },
                                     style = Type.Callout.copy(color = fg, fontWeight = FontWeight.W600),
                                 )
                             }

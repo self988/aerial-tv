@@ -13,6 +13,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import org.json.JSONObject
 import org.json.JSONArray
 import java.net.HttpURLConnection
@@ -69,7 +71,7 @@ data class WeatherForecast(
 object Weather {
     private const val TAG = "AerialWeather"
     private const val PREFS = "weather"
-    private const val REFRESH_MS = 60 * 60 * 1000L
+    private const val REFRESH_MS = 30 * 60 * 1000L // 30-60 min auto-refresh
     /** After a failed reading; only checked when Home comes to the front (issue #1576). */
     private const val RETRY_MS = 3 * 60 * 1000L
     private const val RELOCATE_MS = 24 * 60 * 60 * 1000L
@@ -81,6 +83,7 @@ object Weather {
     var now by mutableStateOf<WeatherNow?>(null); private set
     var hourly by mutableStateOf<List<WeatherHourly>>(emptyList()); private set
     var daily by mutableStateOf<List<WeatherDaily>>(emptyList()); private set
+    var refreshing by mutableStateOf(false); private set
 
     private var rawPlace by mutableStateOf<String?>(null)
 
@@ -155,6 +158,19 @@ object Weather {
                 }
             }.getOrDefault(emptyList())
         }
+        startPeriodic()
+    }
+
+    private var periodicJob: Job? = null
+
+    private fun startPeriodic() {
+        if (periodicJob?.isActive == true) return
+        periodicJob = scope.launch {
+            while (isActive) {
+                delay(5 * 60 * 1000L) // check every 5 minutes
+                refreshIfStale()
+            }
+        }
     }
 
     private var failed = false
@@ -182,52 +198,59 @@ object Weather {
     }
 
     fun refresh() {
+        val since = System.currentTimeMillis() - lastAttempt
+        if (refreshing && since < 3_000L) return
         lastAttempt = System.currentTimeMillis()
         lastResult = "pending"
+        refreshing = true
         job?.cancel()
         job = scope.launch {
-            var why: String? = null
-            val reading = withContext(Dispatchers.IO) {
-                runCatching { fetch() }.onFailure { Log.w(TAG, "weather unavailable", it); why = reasonOf(it) }.getOrNull()
-            }
-            prefs.getString("place", null)?.let { rawPlace = it }
-            failed = reading == null
-            lastResult = if (reading != null) "success" else "failed ($why)"
-            if (reading != null) {
-                Log.i(TAG, "weather read")
-                now = reading.now
-                hourly = reading.hourly
-                daily = reading.daily
-                prefs.edit {
-                    putLong("fetched_at", System.currentTimeMillis())
-                    putInt("celsius", reading.now.celsius)
-                    putString("kind", reading.now.kind.name)
-                    putBoolean("day", reading.now.day)
-                    putInt("high", reading.now.high ?: NONE)
-                    putInt("low", reading.now.low ?: NONE)
-                    val hArr = org.json.JSONArray()
-                    reading.hourly.forEach { h ->
-                        val o = JSONObject()
-                        o.put("time", h.time)
-                        o.put("isNow", h.isNow)
-                        o.put("celsius", h.celsius)
-                        o.put("kind", h.kind.name)
-                        o.put("day", h.day)
-                        hArr.put(o)
-                    }
-                    putString("hourly_json", hArr.toString())
-                    val dArr = org.json.JSONArray()
-                    reading.daily.forEach { d ->
-                        val o = JSONObject()
-                        o.put("date", d.date)
-                        o.put("dayIndex", d.dayIndex)
-                        o.put("high", d.high)
-                        o.put("low", d.low)
-                        o.put("kind", d.kind.name)
-                        dArr.put(o)
-                    }
-                    putString("daily_json", dArr.toString())
+            try {
+                var why: String? = null
+                val reading = withContext(Dispatchers.IO) {
+                    runCatching { fetch() }.onFailure { Log.w(TAG, "weather unavailable", it); why = reasonOf(it) }.getOrNull()
                 }
+                prefs.getString("place", null)?.let { rawPlace = it }
+                failed = reading == null
+                lastResult = if (reading != null) "success" else "failed ($why)"
+                if (reading != null) {
+                    Log.i(TAG, "weather read")
+                    now = reading.now
+                    hourly = reading.hourly
+                    daily = reading.daily
+                    prefs.edit {
+                        putLong("fetched_at", System.currentTimeMillis())
+                        putInt("celsius", reading.now.celsius)
+                        putString("kind", reading.now.kind.name)
+                        putBoolean("day", reading.now.day)
+                        putInt("high", reading.now.high ?: NONE)
+                        putInt("low", reading.now.low ?: NONE)
+                        val hArr = org.json.JSONArray()
+                        reading.hourly.forEach { h ->
+                            val o = JSONObject()
+                            o.put("time", h.time)
+                            o.put("isNow", h.isNow)
+                            o.put("celsius", h.celsius)
+                            o.put("kind", h.kind.name)
+                            o.put("day", h.day)
+                            hArr.put(o)
+                        }
+                        putString("hourly_json", hArr.toString())
+                        val dArr = org.json.JSONArray()
+                        reading.daily.forEach { d ->
+                            val o = JSONObject()
+                            o.put("date", d.date)
+                            o.put("dayIndex", d.dayIndex)
+                            o.put("high", d.high)
+                            o.put("low", d.low)
+                            o.put("kind", d.kind.name)
+                            dArr.put(o)
+                        }
+                        putString("daily_json", dArr.toString())
+                    }
+                }
+            } finally {
+                refreshing = false
             }
         }
     }
