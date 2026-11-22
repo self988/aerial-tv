@@ -35,7 +35,7 @@ import kotlin.math.roundToInt
 enum class WeatherKind { Clear, PartlyCloudy, Cloudy, Fog, Rain, Snow, Thunder }
 
 /** [high] and [low] are today's, shown under the large clock; null in a reading saved by an older version. */
-data class WeatherNow(val celsius: Int, val kind: WeatherKind, val day: Boolean, val high: Int? = null, val low: Int? = null)
+data class WeatherNow(val celsius: Int, val kind: WeatherKind, val day: Boolean, val high: Int? = null, val low: Int? = null, val readAt: Long = 0L)
 
 data class WeatherHourly(
     val time: String,
@@ -77,8 +77,36 @@ object Weather {
     private const val RELOCATE_MS = 24 * 60 * 60 * 1000L
     /** A reading older than this is not shown at all. */
     private const val STALE_MS = 3 * 60 * 60 * 1000L
+    private const val SHOWN_MS = 12 * 60 * 60 * 1000L
     /** Stands for "no high or low" in the prefs. */
     private const val NONE = Int.MIN_VALUE
+
+    fun shown(atMs: Long): WeatherNow? = now?.takeIf { atMs - it.readAt < SHOWN_MS }
+
+    fun hoursOld(w: WeatherNow, atMs: Long): Int? =
+        (atMs - w.readAt).takeIf { it >= STALE_MS }?.let { (it / (60 * 60 * 1000L)).toInt() }
+
+    private var failures = 0
+    private fun retryMs(): Long = (RETRY_MS shl (failures - 1).coerceIn(0, 5)).coerceAtMost(REFRESH_MS)
+    private fun dueInMs(): Long {
+        val since = System.currentTimeMillis() - lastAttempt
+        return ((if (failed) retryMs() else REFRESH_MS) - since).coerceAtLeast(0L)
+    }
+
+    private var ticker: Job? = null
+
+    fun whileShown(shown: Boolean) {
+        ticker?.cancel()
+        ticker = null
+        if (!shown || !started) return
+        ticker = scope.launch {
+            while (isActive) {
+                delay(dueInMs() + 1_000L)
+                job?.join()
+                refreshIfStale()
+            }
+        }
+    }
 
     var now by mutableStateOf<WeatherNow?>(null); private set
     var hourly by mutableStateOf<List<WeatherHourly>>(emptyList()); private set
@@ -118,12 +146,14 @@ object Weather {
                 }
             }
         }
-        if (System.currentTimeMillis() - prefs.getLong("fetched_at", 0) < STALE_MS) {
+        val readAt = prefs.getLong("fetched_at", 0)
+        if (System.currentTimeMillis() - readAt < SHOWN_MS) {
             val kind = runCatching { WeatherKind.valueOf(prefs.getString("kind", null) ?: "") }.getOrNull()
             if (kind != null) now = WeatherNow(
                 prefs.getInt("celsius", 0), kind, prefs.getBoolean("day", true),
                 high = prefs.getInt("high", NONE).takeIf { it != NONE },
                 low = prefs.getInt("low", NONE).takeIf { it != NONE },
+                readAt = readAt,
             )
         }
         val hJson = prefs.getString("hourly_json", null)
@@ -212,14 +242,16 @@ object Weather {
                 }
                 prefs.getString("place", null)?.let { rawPlace = it }
                 failed = reading == null
+                failures = if (reading == null) failures + 1 else 0
                 lastResult = if (reading != null) "success" else "failed ($why)"
                 if (reading != null) {
                     Log.i(TAG, "weather read")
-                    now = reading.now
+                    val at = System.currentTimeMillis()
+                    now = reading.now.copy(readAt = at)
                     hourly = reading.hourly
                     daily = reading.daily
                     prefs.edit {
-                        putLong("fetched_at", System.currentTimeMillis())
+                        putLong("fetched_at", at)
                         putInt("celsius", reading.now.celsius)
                         putString("kind", reading.now.kind.name)
                         putBoolean("day", reading.now.day)
