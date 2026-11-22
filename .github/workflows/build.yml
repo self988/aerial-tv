@@ -49,4 +49,4 @@ jobs:
           gh release delete v2.0-custom --yes || true
           git tag -f v2.0-custom
           git push -f origin v2.0-custom || true
-          gh release create v2.0-custom release-apks/*.apk --title "Aerial 2.0 Custom" --notes "Custom Aerial 2.0 build with Russian captions, Sleep Timer, 7-day Weather, VPN toggle, and Redmi X 2022 profile." || true
+          gh release create v2.0-custom release-apks/*.apk --title "Aerial 2.16 Custom" --notes "Custom Aerial 2.16 build with Russian captions, Sleep Timer, 7-day Weather, VPN toggle, and Redmi X 2022 profile." || true
